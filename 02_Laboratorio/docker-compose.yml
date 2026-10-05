@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: tesi-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: tesi_mcp
+      POSTGRES_USER: tesi_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

@@ -1,0 +1,18 @@
+# Example DBHub configuration for the thesis laboratory.
+# Replace the DSN with your local credentials before using it.
+
+[[sources]]
+id = "local_pg"
+description = "Local PostgreSQL database for MCP security experiments"
+dsn = "postgres://USERNAME:PASSWORD@localhost:5433/tesi_mcp?sslmode=disable"
+search_path = "app,public"
+
+[[tools]]
+name = "execute_sql"
+source = "local_pg"
+readonly = true
+max_rows = 1000
+
+[[tools]]
+name = "search_objects"
+source = "local_pg"

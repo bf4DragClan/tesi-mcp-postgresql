@@ -1,0 +1,47 @@
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT FROM pg_roles WHERE rolname = 'mcp_readonly'
+    ) THEN
+        CREATE ROLE mcp_readonly
+        LOGIN
+        PASSWORD 'CHANGE_ME_READONLY_PASSWORD';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT FROM pg_roles WHERE rolname = 'mcp_writer'
+    ) THEN
+        CREATE ROLE mcp_writer
+        LOGIN
+        PASSWORD 'CHANGE_ME_WRITER_PASSWORD';
+    END IF;
+END
+$$;
+
+
+GRANT CONNECT ON DATABASE tesi_mcp TO mcp_readonly;
+GRANT CONNECT ON DATABASE tesi_mcp TO mcp_writer;
+
+GRANT USAGE ON SCHEMA app TO mcp_readonly;
+GRANT USAGE ON SCHEMA app TO mcp_writer;
+
+GRANT SELECT ON ALL TABLES IN SCHEMA app
+TO mcp_readonly;
+
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA app
+TO mcp_writer;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA app
+TO mcp_writer;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA app
+GRANT SELECT ON TABLES TO mcp_readonly;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA app
+GRANT SELECT, INSERT, UPDATE ON TABLES TO mcp_writer;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA app
+GRANT USAGE, SELECT ON SEQUENCES TO mcp_writer;
+
+REVOKE DELETE ON ALL TABLES IN SCHEMA app
+FROM mcp_writer;
