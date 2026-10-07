@@ -2,444 +2,471 @@
 
 ## 1. Obiettivo
 
-Questa analisi confronta tre MCP Server che permettono a un agente o client compatibile con Model Context Protocol (MCP) di interagire con PostgreSQL:
+Questa analisi confronta quattro MCP Server/framework utilizzabili per permettere ad agenti LLM di interagire con database PostgreSQL:
 
-- DBHub;
-- Microsoft PostgreSQL MCP Server;
-- HenkDz PostgreSQL MCP Server.
+- DBHub
+- HenkDz PostgreSQL MCP Server
+- CrystalDB Postgres MCP Pro
+- Google MCP Toolbox for Databases
 
-L'obiettivo non è stabilire quale progetto sia "più sicuro", ma individuare i diversi approcci utilizzati per controllare l'accesso a PostgreSQL attraverso un agente LLM e identificare le principali superfici di attacco e i meccanismi di mitigazione.
+L'obiettivo non è stabilire quale progetto sia "più sicuro", ma individuare i diversi approcci utilizzati per controllare l'interazione tra agente LLM, MCP Server e database PostgreSQL.
+
+Il confronto serve inoltre a individuare le principali superfici di attacco e i meccanismi di sicurezza che potranno essere analizzati nella successiva fase sperimentale.
+
+---
 
 ## 2. Confronto generale
 
-Le caratteristiche sono suddivise in tre tabelle tematiche.
+| Caratteristica | DBHub | HenkDz PostgreSQL MCP Server | CrystalDB Postgres MCP Pro | Google MCP Toolbox |
+|---|---|---|---|---|
+| Focus principale | Gateway database | Sicurezza e policy MCP | PostgreSQL + performance | Framework per database tools |
+| PostgreSQL | ✅ | ✅ | ✅ | ✅ |
+| Multi-database | ✅ | ❌ | ❌ | ✅ |
+| Modalità Read-only | ✅ | ✅ | ✅ | ✅ |
+| Write | ✅ configurabile | ✅ `write` | ✅ `unrestricted` | ✅ tramite tool/configurazione |
+| SQL arbitrario | `execute_sql` con guardrail | Solo `unsafe` | Disponibile in unrestricted | Disponibile tramite tool SQL |
+| Policy a livello MCP | Limitata | ✅ molto forte | ✅ access mode | ✅ toolsets / authorization |
+| Privilegi PostgreSQL | Fondamentali | Fondamentali | Fondamentali | Fondamentali |
+| Tool allow-list | Configurabile | ✅ `enabledTools` | Limitata | ✅ toolsets |
+| Query parametrizzate | ✅ custom tools | ✅ | ✅ | ✅ custom tools |
+| Gestione credenziali | Configurazione/ambiente | Connection string / runtime | DATABASE_URI | Configurazione / secret management |
+| Performance analysis | Limitata | ✅ diagnostica | ✅ molto importante | ✅ diagnostica |
+| Filesystem access | Limitato | ✅ con workspace | Limitato | Dipendente dai tool |
+| Authentication MCP | Limitata | Dipende dal client | Limitata | ✅ OAuth/OIDC |
+| Authorization MCP | Limitata | Policy server-side | Limitata | ✅ scope / authorization |
+| Audit | Disponibile | ✅ MCP Audit | Limitato | Logging/toolbox |
+| Trasporto HTTP | ✅ | ✅/configurabile | ✅ SSE | ✅ |
+| Complessità | Bassa | Media/alta | Media | Alta |
 
-### Caratteristiche generali
-
-| Caratteristica | DBHub | Microsoft postgres-mcp | HenkDz |
-|---|---|---|---|
-| Database principale | PostgreSQL | PostgreSQL | PostgreSQL |
-| Altri DB supportati | Sì | No | No |
-| Approccio | Gateway MCP per database | Gateway MCP con gestione delle connessioni | Server MCP con policy esplicita |
-| Read-only | Sì | Sì | Sì |
-| Scrittura | Se configurata | Write tools/profilo appropriato | Security mode appropriato |
-| Query SQL | `execute_sql` | `postgres_mcp_query` / `postgres_mcp_modify` | Tool specifici, incluso `pg_execute_sql` |
-
-### Sicurezza e autorizzazione
-
-| Caratteristica | DBHub | Microsoft postgres-mcp | HenkDz |
-|---|---|---|---|
-| Controlli a livello MCP | Sì | Limitati: non è un policy engine | Sì, numerosi |
-| Privilegi PostgreSQL | Fondamentali | Fondamentali | Fondamentali |
-| Least privilege | Raccomandato | Centrale | Centrale |
-| Tool allow-list | Possibile tramite configurazione | Da approfondire | Sì |
-| Row limiting | Sì | Da approfondire | Da approfondire |
-| Modalità di sicurezza | Limitate | `access_mode` | `readonly`, `write`, `admin`, `unsafe` |
-| Operazioni distruttive | Configurazione/read-only | Tool e privilegi PostgreSQL | `allowDestructive=true` |
-| SQL arbitrario | Da analizzare | Da analizzare | `arbitrary_sql` con `unsafe` |
-
-### Connessioni e gestione operativa
-
-| Caratteristica | DBHub | Microsoft postgres-mcp | HenkDz |
-|---|---|---|---|
-| Query timeout | Sì | PostgreSQL/configurazione | Sì |
-| Gestione connessioni | DSN/TOML e altre modalità | Profili di connessione | Connection string e restrizioni sulle destinazioni |
-| Gestione credenziali | Configurazione, ambiente o keyring | Keyring del sistema operativo / altre modalità | Configurazione a runtime |
-| Controllo filesystem | Limitato/non centrale | Sì, per gli strumenti CSV | Sì, tramite workspace |
-| Audit | Da approfondire sperimentalmente | PostgreSQL/logging | Audit MCP integrato |
+---
 
 ## 3. DBHub
 
 ### Approccio
 
-DBHub è un MCP Server general-purpose che funziona come gateway tra client MCP e diversi DBMS.
+DBHub è un MCP Server minimale e general-purpose che agisce come gateway tra client MCP e database.
 
-Di default espone principalmente:
+Supporta PostgreSQL e diversi altri DBMS.
 
-- `execute_sql`;
-- `search_objects`.
+Di default espone solamente due tool:
 
-Sono disponibili anche strumenti opzionali come:
+- `execute_sql`
+- `search_objects`
 
-- `explain_sql`;
-- `health_check`;
-- custom tools.
+con strumenti aggiuntivi attivabili opzionalmente.
 
-### Meccanismi di sicurezza rilevanti
+### Sicurezza
 
-DBHub mette a disposizione:
+DBHub introduce diversi guardrail:
 
 - modalità read-only;
-- limite al numero massimo di righe restituite;
-- timeout delle query;
+- limite al numero di righe;
+- query timeout;
 - SSL/TLS;
-- possibilità di utilizzare SSH tunnel;
-- configurazione tramite TOML.
+- SSH tunneling;
+- custom tools parametrizzati.
 
-Un aspetto importante è la possibilità di combinare il controllo applicativo con vincoli direttamente a livello database.
-
-### Interesse per la tesi
-
-DBHub rappresenta un esempio di MCP Server relativamente minimale nel quale è particolarmente interessante analizzare il rapporto tra:
-
-```text
-MCP Server
-     +
-query validation
-     +
-PostgreSQL
-```
-
-Un caso di studio particolarmente interessante riguarda la protezione read-only e il modo in cui questa viene combinata con l'enforcement del database.
-
-## 4. Microsoft PostgreSQL MCP Server
-
-### Approccio
-
-Microsoft postgres-mcp è focalizzato su PostgreSQL e include funzionalità relative a:
-
-- gestione delle connessioni;
-- query;
-- modifica dei dati;
-- analisi dello schema;
-- diagnostica;
-- importazione di dati.
-
-Tra i tool principali sono presenti:
-
-- `postgres_mcp_query`;
-- `postgres_mcp_modify`;
-- strumenti di gestione delle connessioni;
-- strumenti per lo schema;
-- strumenti per CSV e diagnostica.
-
-### Modello di sicurezza
-
-La documentazione dichiara esplicitamente che il server è un:
-
-```text
-gateway, non un policy engine
-```
-
-Il server esegue le operazioni utilizzando l'identità e i privilegi del ruolo PostgreSQL associato alla connessione.
-
-Di conseguenza:
-
-```text
-MCP Server
-     |
-     v
-PostgreSQL Role
-     |
-     v
-PostgreSQL
-```
-
-Il ruolo PostgreSQL costituisce una delle principali barriere di sicurezza.
-
-### Read-only
-
-Il server permette di impostare un profilo con:
-
-```text
-access_mode = ro
-```
-
-ma la documentazione raccomanda di utilizzare contemporaneamente un ruolo PostgreSQL realmente read-only.
-
-Quindi:
-
-```text
-MCP read-only
-        +
-PostgreSQL read-only role
-```
-
-rappresentano due livelli distinti di protezione.
+L'approccio è quindi quello di mantenere il server relativamente semplice e aggiungere controlli specifici attorno all'esecuzione SQL.
 
 ### Interesse per la tesi
 
-Questo progetto rappresenta un modello nel quale la sicurezza viene fortemente delegata al DBMS.
-
-È quindi particolarmente utile per studiare la domanda:
-
-> Quanto è sufficiente utilizzare i privilegi PostgreSQL come principale confine di sicurezza per un agente LLM?
-
-## 5. HenkDz PostgreSQL MCP Server
-
-### Approccio
-
-HenkDz introduce un livello di policy più esplicito tra MCP e PostgreSQL.
-
-Il server utilizza quattro modalità principali:
-
-- `readonly`;
-- `write`;
-- `admin`;
-- `unsafe`.
-
-Le funzionalità disponibili aumentano progressivamente con il livello di sicurezza.
-
-### `readonly`
-
-Permette:
-
-- ispezione;
-- analisi;
-- monitoring;
-- query read-only.
-
-### `write`
-
-Aggiunge operazioni strutturate di modifica dei dati.
-
-### `admin`
-
-Aggiunge:
-
-- DDL;
-- gestione dei ruoli;
-- Row-Level Security;
-- import/export;
-- migration-style operations.
-
-### `unsafe`
-
-Permette operazioni ad alto rischio, tra cui SQL arbitrario e raw SQL fragments.
-
-Le operazioni distruttive richiedono inoltre:
-
-```text
-allowDestructive = true
-```
-
-### Altri controlli
-
-Il server implementa anche:
-
-- `enabledTools` per limitare i tool disponibili;
-- restrizioni sulle connection string;
-- allow-list delle destinazioni di connessione;
-- sandbox del filesystem;
-- audit degli eventi di sicurezza;
-- timeout;
-- query parametrizzate;
-- supporto a Row-Level Security;
-- esecuzione Docker come utente non-root.
-
-### Interesse per la tesi
-
-HenkDz rappresenta un modello in cui l'MCP Server può essere utilizzato come vero e proprio punto di enforcement delle policy.
-
-L'architettura può essere schematizzata come:
+DBHub rappresenta una buona baseline perché permette di studiare il caso:
 
 ```text
 LLM
- |
- v
-MCP Client
- |
- v
-Security Policy
- |
- +-- security mode
- +-- tool restrictions
- +-- destructive checks
- +-- connection restrictions
- +-- filesystem restrictions
- |
- v
+ ↓
+MCP Server
+ ↓
+execute_sql
+ ↓
 PostgreSQL
- |
- +-- database permissions
- +-- Row-Level Security
 ```
 
-Questo permette di studiare il rapporto tra sicurezza implementata nell'MCP Server e sicurezza nativa PostgreSQL.
+È particolarmente interessante per analizzare il rapporto tra controlli implementati dall'MCP Server e privilegi PostgreSQL.
 
-## 6. Differenze principali
+## 4. HenkDz PostgreSQL MCP Server
 
-Dall'analisi preliminare emergono tre approcci differenti.
+### Approccio
+
+HenkDz adotta un approccio più orientato alla sicurezza rispetto a un semplice gateway.
+
+Il server classifica le operazioni e applica una policy prima che la richiesta raggiunga PostgreSQL.
+
+Sono disponibili quattro modalità:
+
+```text
+readonly
+write
+admin
+unsafe
+```
+
+### Sicurezza
+
+La modalità predefinita è readonly.
+
+L'aumento dei privilegi è esplicito:
+
+```text
+readonly
+   ↓
+write
+   ↓
+admin
+   ↓
+unsafe
+```
+
+Sono inoltre presenti:
+
+- `allowDestructive`;
+- allow-list dei tool tramite `enabledTools`;
+- restrizioni sulle connection string;
+- allow-list delle destinazioni;
+- sandbox del filesystem;
+- audit degli eventi;
+- timeout;
+- query parametrizzate;
+- supporto PostgreSQL Row-Level Security.
+
+Le operazioni distruttive e l'SQL arbitrario richiedono configurazioni esplicite più permissive.
+
+### Interesse per la tesi
+
+È un caso particolarmente interessante per studiare l'MCP Server come vero e proprio punto di enforcement delle policy.
+
+Architettura:
+
+```text
+LLM
+ ↓
+MCP Client
+ ↓
+Security Policy
+ ↓
+PostgreSQL
+```
+
+Permette quindi di confrontare la sicurezza applicata dall'MCP con quella nativa del database.
+
+## 5. CrystalDB Postgres MCP Pro
+
+### Approccio
+
+Postgres MCP Pro è un MCP Server specificamente progettato per PostgreSQL.
+
+Oltre alle normali operazioni SQL, integra numerosi strumenti dedicati all'analisi delle performance e dello stato del database.
+
+Tra le funzionalità disponibili troviamo:
+
+- esecuzione SQL;
+- analisi dei piani di esecuzione;
+- analisi dello stato del database;
+- analisi del workload;
+- suggerimenti sugli indici;
+- statistiche sulle query.
+
+### Access modes
+
+Il progetto distingue due modalità principali:
+
+```text
+unrestricted
+restricted
+```
+
+- `unrestricted` permette accesso read/write ed è pensata principalmente per ambienti di sviluppo.
+
+- `restricted` limita le operazioni a read-only e introduce limiti sull'esecuzione delle query.
+
+### Sicurezza
+
+Il progetto combina diversi meccanismi:
+
+```text
+SQL parsing
++
+read-only transactions
++
+resource limits
++
+PostgreSQL permissions
+```
+
+La protezione read-only è quindi costruita su più livelli.
+
+### Interesse per la tesi
+
+È particolarmente interessante perché permette di studiare non solo l'accesso ai dati, ma anche l'esposizione di informazioni sul database tramite strumenti di performance analysis.
+
+Può quindi essere analizzato sia dal punto di vista:
+
+- `integrity`;
+- `confidentiality / information disclosure`.
+
+## 6. Google MCP Toolbox for Databases
+
+### Approccio
+
+MCP Toolbox è più ampio di un semplice MCP Server PostgreSQL.
+
+È un framework che permette di:
+
+- utilizzare database prebuilt tools;
+- creare custom tools;
+- raggruppare tool in toolsets;
+- configurare autenticazione e autorizzazione;
+- validare parametri.
+
+Supporta PostgreSQL e numerosi altri database.
+
+### Prebuilt tools
+
+Tra gli strumenti disponibili per PostgreSQL troviamo:
+
+- `execute_sql`;
+- `list_tables`;
+- `list_schemas`;
+- `list_roles`;
+- strumenti diagnostici;
+- statistiche;
+- informazioni su indici, lock e query.
+
+Questo rende il server molto più ricco rispetto alla configurazione minimale di DBHub.
+
+### Custom tools
+
+Una caratteristica particolarmente interessante è la possibilità di definire query preimpostate con parametri.
+
+Esempio:
+
+```text
+LLM
+ ↓
+search_customer
+ ↓
+parameter: name
+ ↓
+query SQL predefinita
+ ↓
+PostgreSQL
+```
+
+Il modello non deve quindi necessariamente generare SQL arbitrario.
+
+Questo permette di confrontare:
+
+```text
+SQL arbitrario
+```
+
+con:
+
+```text
+custom tool + query parametrizzata
+```
+
+### Sicurezza
+
+Toolbox dispone di funzionalità relative a:
+
+- autenticazione OAuth/OIDC;
+- authorization;
+- tool scopes;
+- toolsets;
+- parameter validation;
+- secure parameters;
+- meccanismi read-only;
+- controlli a livello database.
+
+### Interesse per la tesi
+
+MCP Toolbox è particolarmente interessante per studiare il principio secondo cui la sicurezza può essere migliorata limitando ciò che l'LLM può chiedere al database.
+
+La domanda diventa:
+
+È più sicuro fornire all'agente un accesso SQL generale oppure una serie di tool specifici e parametrizzati?
+
+## 7. Differenze principali tra i quattro progetti
+
+I quattro progetti rappresentano approcci differenti.
 
 ### DBHub
 
-L'attenzione è rivolta principalmente a fornire un'interfaccia semplice e controllata verso i database.
-
 ```text
-MCP
- |
- v
+LLM
+ ↓
 DBHub
- |
- +-- guardrails
- |
- v
+ ↓
 PostgreSQL
 ```
 
-### Microsoft postgres-mcp
+Focus:
 
-Il server enfatizza il principio secondo cui i privilegi reali devono essere imposti da PostgreSQL.
-
-```text
-MCP
- |
- v
-postgres-mcp
- |
- v
-PostgreSQL role
- |
- v
-PostgreSQL
-```
+- semplicità;
+- token efficiency;
+- guardrail;
+- accesso SQL controllato.
 
 ### HenkDz
 
-Il server introduce una policy esplicita tra MCP e database.
-
 ```text
-MCP
- |
- v
+LLM
+ ↓
 Security Policy
- |
- v
-PostgreSQL role
- |
- v
+ ↓
 PostgreSQL
 ```
 
-## 7. Prime superfici di attacco individuate
+Focus:
 
-Dall'analisi dei tre progetti emergono diverse aree che possono essere studiate sperimentalmente:
+- policy MCP;
+- risk classification;
+- security modes;
+- least privilege.
 
-- eccessivi privilegi del ruolo PostgreSQL;
-- prompt injection;
-- tool misuse;
-- SQL injection;
-- esecuzione di SQL arbitrario;
-- operazioni distruttive;
-- accesso non autorizzato ai dati;
-- data leakage;
-- uso di connection string non autorizzate;
-- accesso non controllato al filesystem;
-- query troppo pesanti o non terminate;
-- mancanza di auditing sufficiente;
-- differenze tra controlli applicati dall'MCP Server e controlli applicati direttamente da PostgreSQL.
-
-## 8. Prime domande di ricerca
-
-L'analisi preliminare permette di formulare alcune domande che potranno essere verificate durante la fase sperimentale.
-
-### Domanda 1
-
-> È sufficiente il controllo delle query a livello MCP Server per garantire un accesso sicuro a PostgreSQL?
-
-### Domanda 2
-
-> Quanto incidono i privilegi del ruolo PostgreSQL sulla sicurezza complessiva dell'agente?
-
-### Domanda 3
-
-> Quanto può ridurre la superficie di attacco un MCP Server che implementa policy esplicite sui tool?
-
-### Domanda 4
-
-> È possibile combinare efficacemente:
-
-> ```text
-> MCP security policy
->         +
-> PostgreSQL permissions
->         +
-> Row-Level Security
-> ```
-
-> per limitare il comportamento di un agente LLM?
-
-### Domanda 5
-
-Qual è il compromesso tra sicurezza e funzionalità quando si passa da un accesso read-only a modalità che permettono scrittura o SQL arbitrario?
-
-## 9. Possibile modello sperimentale
-
-Una possibile struttura per gli esperimenti futuri è:
+### CrystalDB
 
 ```text
 LLM
- |
- v
-MCP Client
- |
- v
-MCP Server
- |
- v
-Security Layer
- |
- v
+ ↓
+Postgres MCP Pro
+ ↓
+SQL + Performance Analysis
+ ↓
 PostgreSQL
 ```
 
-Saranno confrontate configurazioni differenti, ad esempio:
+Focus:
 
-- **A.** MCP senza restrizioni significative;
-- **B.** MCP read-only;
-- **C.** MCP + PostgreSQL least privilege;
-- **D.** MCP policy + PostgreSQL least privilege;
-- **E.** MCP policy + PostgreSQL least privilege + RLS.
+- SQL;
+- read-only security;
+- performance;
+- database analysis.
 
-Per ogni configurazione potranno essere testate richieste legittime e richieste progettate per tentare di superare i limiti imposti.
-
-## 10. Conclusione preliminare
-
-I tre progetti mostrano che la sicurezza di un MCP Server collegato a PostgreSQL può essere affrontata a livelli differenti.
-
-Il problema non riguarda quindi esclusivamente la sicurezza del database e non riguarda esclusivamente la sicurezza dell'MCP Server.
-
-Una possibile rappresentazione del problema complessivo è:
+### Google Toolbox
 
 ```text
-        LLM / Agent
-             |
-             v
-         MCP Client
-             |
-             v
-         MCP Server
-             |
-      Security Layer
-             |
-             v
-      PostgreSQL Role
-             |
-             v
-         PostgreSQL
+LLM
+ ↓
+Toolbox
+ ↓
+Custom / Prebuilt Tools
+ ↓
+PostgreSQL
 ```
 
-La fase successiva della ricerca consiste nel costruire un ambiente sperimentale controllato e verificare concretamente come questi diversi livelli influenzino le operazioni che un agente può eseguire.
+Focus:
 
-## 11. Fonti principali
+- tool design;
+- parameter validation;
+- toolsets;
+- authentication/authorization.
 
-### DBHub
+## 8. Principali superfici di attacco individuate
 
-- <https://github.com/bytebase/dbhub>
-- <https://github.com/bytebase/dbhub/blob/main/README.md>
-- <https://github.com/bytebase/dbhub/blob/main/dbhub.toml.example>
+Dal confronto emergono le seguenti aree di interesse:
 
-### Microsoft PostgreSQL MCP
+- SQL injection;
+- prompt injection;
+- tool misuse;
+- SQL arbitrario;
+- privilege escalation;
+- excessive database privileges;
+- data leakage;
+- metadata leakage;
+- credential exposure;
+- accesso non autorizzato;
+- abuso dei tool diagnostici;
+- problemi di autenticazione e autorizzazione;
+- sicurezza del trasporto MCP;
+- accesso a filesystem o altre risorse locali.
 
-- <https://github.com/microsoft/postgres-mcp>
-- <https://github.com/microsoft/postgres-mcp/blob/main/USAGE.md>
+## 9. Possibili direttrici sperimentali
 
-### HenkDz PostgreSQL MCP Server
+I quattro progetti permettono di impostare confronti come:
 
-- <https://github.com/HenkDz/postgresql-mcp-server>
-- <https://github.com/HenkDz/postgresql-mcp-server/blob/main/SECURITY.md>
-- <https://github.com/HenkDz/postgresql-mcp-server/blob/main/TOOL_SCHEMAS.md>
+```text
+MCP read-only
+        vs
+MCP write
+```
 
-### MCP
+```text
+MCP policy
+        vs
+PostgreSQL permissions
+```
 
-- <https://modelcontextprotocol.io/>
+```text
+SQL arbitrario
+        vs
+custom parameterized tools
+```
+
+```text
+tool limitati
+        vs
+toolset completo
+```
+
+```text
+sola esposizione dei dati
+        vs
+esposizione dei metadata e delle diagnostiche
+```
+
+## 10. Possibili domande di ricerca
+
+### Domanda 1
+
+È sufficiente affidarsi ai privilegi PostgreSQL oppure è necessario applicare ulteriori policy a livello MCP?
+
+### Domanda 2
+
+Quanto riduce la superficie di attacco la limitazione dei tool disponibili all'agente?
+
+### Domanda 3
+
+È più sicuro utilizzare custom tools parametrizzati rispetto a consentire SQL arbitrario?
+
+### Domanda 4
+
+Quali informazioni sul database vengono rese disponibili all'agente oltre ai dati contenuti nelle tabelle?
+
+### Domanda 5
+
+Qual è il compromesso tra sicurezza, flessibilità e funzionalità dei diversi MCP Server?
+
+## 11. Conclusione preliminare
+
+L'analisi dei quattro progetti mostra che la sicurezza dell'interazione:
+
+```text
+LLM → MCP → Database
+```
+
+può essere realizzata a più livelli:
+
+```text
+LLM
+ ↓
+MCP Client
+ ↓
+MCP Server
+ ↓
+Security Policy
+ ↓
+PostgreSQL
+ ↓
+Database privileges
+```
+
+Non esiste quindi un singolo meccanismo sufficiente in ogni scenario.
+
+I quattro progetti forniscono casi di studio complementari:
+
+- DBHub → baseline minimale con guardrail;
+- HenkDz → policy di sicurezza esplicita;
+- CrystalDB → sicurezza dell'SQL e performance analysis;
+- Google MCP Toolbox → progettazione e controllo dei tool.
