@@ -1,0 +1,3 @@
+[submodule "02_Laboratorio/pagila-source"]
+	path = 02_Laboratorio/pagila-source
+	url = https://github.com/devrimgunduz/pagila.git
