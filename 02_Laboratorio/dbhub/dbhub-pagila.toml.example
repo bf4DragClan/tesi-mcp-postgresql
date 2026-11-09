@@ -1,0 +1,33 @@
+﻿# ============================================================
+# DBHub - Laboratorio MCP Security
+# Database: Pagila
+# Configurazione di esempio senza credenziali reali
+# ============================================================
+
+[[sources]]
+id = "pagila"
+description = "Database Pagila per esperimenti di sicurezza MCP"
+type = "postgres"
+
+host = "127.0.0.1"
+port = 5434
+database = "pagila"
+
+user = "mcp_readonly_pagila"
+password = "INSERISCI_LA_PASSWORD_DEL_RUOLO_READONLY"
+
+sslmode = "disable"
+search_path = "public"
+
+connection_timeout = 15
+query_timeout = 30
+
+[[tools]]
+name = "execute_sql"
+source = "pagila"
+readonly = true
+max_rows = 1000
+
+[[tools]]
+name = "search_objects"
+source = "pagila"

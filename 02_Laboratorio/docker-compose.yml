@@ -1,19 +1,23 @@
 services:
-  postgres:
-    image: postgres:17
-    container_name: tesi-postgres
+  pagila:
+    build:
+      context: ./pagila-source
+    container_name: tesi-pagila
     restart: unless-stopped
 
     environment:
-      POSTGRES_DB: tesi_mcp
-      POSTGRES_USER: tesi_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: pagila
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PAGILA_POSTGRES_PASSWORD:?Definisci PAGILA_POSTGRES_PASSWORD in .env.pagila}
 
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5434:5432"
 
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pagila_data:/var/lib/postgresql
+      - ./pagila-source/pagila-schema.sql:/docker-entrypoint-initdb.d/1-pagila-schema.sql:ro
+      - ./pagila-source/pagila-data.sql:/docker-entrypoint-initdb.d/2-pagila-data.sql:ro
+      - ./pagila-source/pg_partman-setup.sql:/docker-entrypoint-initdb.d/3-pg_partman-setup.sql:ro
 
 volumes:
-  postgres_data:
+  pagila_data:

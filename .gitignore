@@ -17,7 +17,8 @@ yarn-error.log*
 !.env.example
 
 # Local DBHub configuration containing credentials
-02_Laboratorio/dbhub/dbhub.toml
+02_Laboratorio/dbhub/*.toml
+!02_Laboratorio/dbhub/*.toml.example
 
 # Local/private Claude configuration
 claude_desktop_config.json
