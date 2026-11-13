@@ -1,217 +1,335 @@
-# Setup del database di laboratorio
+# Setup del laboratorio PostgreSQL con Pagila
 
-## PostgreSQL
+## 1. Obiettivo
 
-Il laboratorio utilizza PostgreSQL 17.11 eseguito all'interno di un container Docker.
+Il laboratorio sperimentale utilizza il database Pagila, un database di esempio basato su uno scenario applicativo di noleggio cinematografico, eseguito tramite PostgreSQL all'interno di un container Docker.
 
-Database:
+L'obiettivo è realizzare un ambiente riproducibile per studiare la sicurezza dell'interazione tra Large Language Models (LLM), MCP Server e database relazionali.
 
-- Nome: `tesi_mcp`
-- Container: `tesi-postgres`
+In particolare, il laboratorio permette di analizzare:
 
-## Schema
+- i privilegi assegnati agli utenti PostgreSQL;
+- le modalità di accesso in sola lettura;
+- i controlli implementati a livello MCP Server;
+- la separazione tra le responsabilità del server MCP e quelle del database;
+- l'efficacia di più livelli di protezione applicati congiuntamente.
 
-È stato creato lo schema `app`, contenente le seguenti tabelle:
+## 2. Database Pagila
 
-- `customers`
-- `employees`
-- `orders`
-- `payments`
+Il dataset utilizzato è Pagila, disponibile nel repository:
 
-## Dati iniziali
+https://github.com/devrimgunduz/pagila
 
-Il database contiene dati sintetici:
+Il repository è integrato nel progetto come Git submodule nella directory:
 
-- 20 customers
-- 8 employees
-- 40 orders
-- 30 payments
+`02_Laboratorio/pagila-source`
 
-I dati sono artificiali e vengono utilizzati esclusivamente per gli esperimenti della tesi.
+La revisione del submodule è registrata nel repository principale, in modo da mantenere identificabile la versione utilizzata negli esperimenti.
 
-## Ruoli PostgreSQL
+### 2.1 Configurazione PostgreSQL
 
-### `tesi_user`
+Il database è eseguito tramite Docker Compose.
 
-Utente amministrativo utilizzato per la configurazione del database e la gestione del laboratorio.
+| Parametro | Valore |
+|---|---|
+| Database | `pagila` |
+| Container | `tesi-pagila` |
+| Immagine | `02_laboratorio-pagila` |
+| Versione PostgreSQL verificata | 18.6 |
+| Porta interna | 5432 |
+| Porta host | 5434 |
+| Host | `127.0.0.1` |
+| Volume Docker | `02_laboratorio_pagila_data` |
 
-Questo account non deve essere utilizzato dall'MCP Server.
+La porta è associata all'indirizzo di loopback `127.0.0.1`, in modo da limitare l'accessibilità del servizio alla macchina locale.
 
-### `mcp_readonly`
+### 2.2 Struttura dei dati
 
-Utente PostgreSQL dedicato all'accesso in sola lettura.
+Pagila contiene diverse tabelle che rappresentano le entità di un sistema di noleggio cinematografico.
 
-Privilegi principali:
+Tra le principali tabelle utilizzate negli esperimenti:
 
-- `SELECT`
+- `customer`
+- `film`
+- `actor`
+- `inventory`
+- `rental`
+- `payment`
 
-Non deve poter effettuare operazioni di modifica o cancellazione dei dati.
+Il database è stato inizializzato utilizzando gli script SQL forniti dal repository Pagila, montati nella directory `/docker-entrypoint-initdb.d` del container.
 
-### `mcp_writer`
+### 2.3 Verifica iniziale del dataset
 
-Utente PostgreSQL con privilegi limitati di scrittura.
+Dopo l'inizializzazione del database sono stati eseguiti alcuni conteggi per verificare la corretta importazione dei dati.
 
-Privilegi principali:
-
-- `SELECT`
-- `INSERT`
-- `UPDATE`
-
-Non dispone del privilegio:
-
-- `DELETE`
-
-## Obiettivo della configurazione
-
-La presenza di ruoli con privilegi differenti permette di studiare sperimentalmente il principio di least privilege e il ruolo dei privilegi PostgreSQL nella sicurezza di un MCP Server.
-
-L'MCP Server non dovrà utilizzare l'utente amministrativo tesi_user.
-
-## Verifica dei privilegi
-
-Sono stati eseguiti test sui due ruoli PostgreSQL utilizzando `SET LOCAL ROLE` all'interno di una transazione.
-
-### Risultati `mcp_readonly`
-
-- `SELECT`: consentito
-- `INSERT`: negato
-- modifiche annullate tramite `ROLLBACK`
-
-### Risultati `mcp_writer`
-
-- `SELECT`: consentito
-- `INSERT`: consentito
-- `UPDATE`: consentito
-- `DELETE`: negato
-- modifiche annullate tramite `ROLLBACK`
-
-I risultati confermano che i privilegi configurati per i due ruoli funzionano come previsto.
-
-Questa configurazione costituisce la baseline di sicurezza PostgreSQL che verrà utilizzata nella successiva integrazione con gli MCP Server. 
-
-## Integrazione DBHub
-
-DBHub è stato eseguito localmente tramite Node.js utilizzando:
-
-```text
-@bytebase/dbhub@1.3.1
-```
-
-Configurazione utilizzata:
-
-- transport: HTTP
-- host: `127.0.0.1`
-- porta HTTP: `8080`
-- MCP endpoint: `http://127.0.0.1:8080/mcp`
-- Workbench: `http://127.0.0.1:8080`
-- database PostgreSQL: `tesi_mcp`
-- porta PostgreSQL host: `5433`
-- ruolo PostgreSQL utilizzato da DBHub: `mcp_readonly`
-- `execute_sql`: configurato con `readonly = true`
-- `max_rows`: `1000`
-
-La connessione DBHub → PostgreSQL è stata verificata con successo.
-
-Sono state eseguite le seguenti operazioni tramite il Workbench:
-
-- verifica dell'utente PostgreSQL;
-- verifica del database utilizzato;
-- lettura dei dati dalla tabella `app.customers`;
-- tentativo di `INSERT`.
-
-Le operazioni di lettura sono state eseguite correttamente, mentre l'operazione di inserimento è stata rifiutata come previsto.
-
-La configurazione dimostra quindi il funzionamento combinato di:
-
-- DBHub read-only
-- PostgreSQL `mcp_readonly` role
-
-## Test MCP Inspector
-
-Dopo la configurazione di DBHub è stato utilizzato MCP Inspector per verificare la comunicazione tramite protocollo MCP.
-
-Architettura testata:
-
-```text
-MCP Inspector
-      |
-      v
-    DBHub
-      |
-      v
-mcp_readonly
-      |
-      v
- PostgreSQL
-```
-
-Sono stati verificati i seguenti casi:
-
-### Identificazione della connessione
-
-La chiamata:
+Query utilizzate:
 
 ```sql
-SELECT current_user;
+SELECT COUNT(*) AS customers
+FROM public.customer;
+
+SELECT COUNT(*) AS films
+FROM public.film;
+
+SELECT COUNT(*) AS rentals
+FROM public.rental;
+
+SELECT COUNT(*) AS payments
+FROM public.payment;
+
+SELECT COUNT(*) AS inventory
+FROM public.inventory;
+
+SELECT COUNT(*) AS actors
+FROM public.actor;
 ```
 
-ha restituito:
+Risultati ottenuti:
 
-```text
-mcp_readonly
+| Tabella | Record |
+|---|---:|
+| `public.customer` | 999 |
+| `public.film` | 1000 |
+| `public.rental` | 51805 |
+| `public.payment` | 51061 |
+| `public.inventory` | 4581 |
+| `public.actor` | 200 |
+
+Questi valori costituiscono il riferimento iniziale per i controlli di integrità dei dati.
+
+## 3. Avvio dell'ambiente Docker
+
+La configurazione Docker è contenuta nel file:
+
+`02_Laboratorio/docker-compose.yml`
+
+Il progetto utilizza un file locale `.env.pagila` per conservare la password amministrativa PostgreSQL.
+
+Il file `.env.pagila` non deve essere pubblicato su GitHub.
+
+È disponibile un file di esempio:
+
+`02_Laboratorio/.env.example`
+
+Per predisporre l'ambiente su una nuova installazione, copiare il file di esempio con il nome `.env.pagila` e inserire una password sicura.
+
+Da PowerShell, nella directory `02_Laboratorio`, è possibile avviare l'ambiente con:
+
+```powershell
+Copy-Item .env.example .env.pagila
+
+notepad .env.pagila
+
+docker compose --env-file .env.pagila up -d --build
 ```
 
-La chiamata:
+Il comando avvia il container Pagila e costruisce l'immagine a partire dal repository integrato come submodule.
+
+Per verificare lo stato del container:
+
+```powershell
+docker compose --env-file .env.pagila ps
+```
+
+Per visualizzare i log:
+
+```powershell
+docker compose --env-file .env.pagila logs -f pagila
+```
+
+Per arrestare l'ambiente senza eliminare i dati persistenti:
+
+```powershell
+docker compose --env-file .env.pagila down
+```
+
+Il volume `pagila_data` conserva i dati PostgreSQL tra un arresto e il successivo avvio.
+
+**Attenzione:** gli script presenti in `/docker-entrypoint-initdb.d` vengono eseguiti durante l'inizializzazione di un volume PostgreSQL vuoto. Modificarli successivamente non comporta automaticamente una nuova importazione dei dati. Non utilizzare `docker compose down -v` durante il normale utilizzo del laboratorio, perché eliminerebbe anche il volume contenente il database.
+
+## 4. Configurazione dei ruoli PostgreSQL
+
+Per gli esperimenti è stato creato un utente dedicato all'accesso in sola lettura:
+
+`mcp_readonly_pagila`
+
+Il principio adottato è quello del *Least Privilege*: l'utente utilizzato dall'MCP Server deve disporre esclusivamente dei privilegi necessari all'esecuzione delle operazioni previste.
+
+### 4.1 Creazione del ruolo
+
+Per accedere al database tramite l'utente amministrativo:
+
+```powershell
+docker exec -it tesi-pagila psql -U postgres -d pagila
+```
+
+Creazione del ruolo:
 
 ```sql
-SELECT current_database();
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE rolname = 'mcp_readonly_pagila'
+    ) THEN
+        CREATE ROLE mcp_readonly_pagila LOGIN;
+    END IF;
+END
+$$;
 ```
 
-ha restituito:
+Impostazione della password:
 
-```text
-tesi_mcp
+```sql
+\password mcp_readonly_pagila
 ```
 
-### Lettura dei dati
+La password viene inserita direttamente nel prompt interattivo di PostgreSQL e non deve essere riportata nei file versionati.
 
-È stata eseguita con successo una query sulla tabella:
+### 4.2 Assegnazione dei privilegi
 
-```text
-app.customers
+Sono stati assegnati i seguenti privilegi:
+
+```sql
+GRANT CONNECT ON DATABASE pagila
+TO mcp_readonly_pagila;
+
+GRANT USAGE ON SCHEMA public
+TO mcp_readonly_pagila;
+
+GRANT SELECT ON ALL TABLES IN SCHEMA public
+TO mcp_readonly_pagila;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres
+IN SCHEMA public
+GRANT SELECT ON TABLES TO mcp_readonly_pagila;
 ```
 
-con restituzione dei dati presenti nel database.
+La configurazione consente all'utente di:
 
-### Tentativo di modifica
+- collegarsi al database `pagila`;
+- accedere allo schema `public`;
+- eseguire interrogazioni di lettura sulle tabelle esistenti;
+- ricevere automaticamente i privilegi SELECT sulle nuove tabelle create in futuro dal ruolo `postgres` nello schema `public`.
 
-È stato eseguito un `INSERT` sulla tabella:
+Non vengono assegnati privilegi di INSERT, UPDATE o DELETE sulle tabelle.
 
-```text
-app.customers
+### 4.3 Verifica dei privilegi
+
+La configurazione è stata verificata utilizzando le funzioni di controllo dei privilegi di PostgreSQL.
+
+Query eseguita:
+
+```sql
+SELECT
+    has_database_privilege(
+        'mcp_readonly_pagila',
+        'pagila',
+        'CONNECT'
+    ) AS can_connect,
+    has_table_privilege(
+        'mcp_readonly_pagila',
+        'public.customer',
+        'SELECT'
+    ) AS can_select,
+    has_table_privilege(
+        'mcp_readonly_pagila',
+        'public.customer',
+        'INSERT'
+    ) AS can_insert,
+    has_table_privilege(
+        'mcp_readonly_pagila',
+        'public.customer',
+        'UPDATE'
+    ) AS can_update,
+    has_table_privilege(
+        'mcp_readonly_pagila',
+        'public.customer',
+        'DELETE'
+    ) AS can_delete;
 ```
 
-L'operazione è stata rifiutata per mancanza dei privilegi del ruolo `mcp_readonly`.
+Risultato:
 
-### Risultato
+| Permesso | Risultato |
+|---|---|
+| CONNECT | `true` |
+| SELECT | `true` |
+| INSERT | `false` |
+| UPDATE | `false` |
+| DELETE | `false` |
 
-Il test conferma la seguente catena:
+La verifica conferma la corretta assegnazione dei privilegi previsti.
 
-```text
-MCP Inspector
-      ↓
-DBHub
-      ↓
-PostgreSQL
-```
+## 5. Configurazione DBHub
 
-con DBHub configurato in modalità read-only e PostgreSQL configurato con un ruolo che dispone esclusivamente dei privilegi necessari alla lettura.
+DBHub è il primo MCP Server utilizzato nel laboratorio sperimentale.
 
-## Integrazione completa con Claude Desktop
+Repository:
 
-È stata completata una prima integrazione end-to-end tra un agente LLM, un client MCP, DBHub e il database PostgreSQL del laboratorio.
+https://github.com/bytebase/dbhub
 
-Architettura utilizzata:
+Il server viene avviato localmente tramite Node.js e npm, utilizzando il pacchetto:
+
+`@bytebase/dbhub`
+
+La configurazione locale è conservata nel file:
+
+`02_Laboratorio/dbhub/dbhub-pagila.toml`
+
+Questo file contiene le credenziali di accesso al database e non deve essere pubblicato su GitHub.
+
+È disponibile una configurazione di esempio senza credenziali:
+
+`02_Laboratorio/dbhub/dbhub-pagila.toml.example`
+
+### 5.1 Parametri di connessione
+
+| Parametro | Valore |
+|---|---|
+| Source ID | `pagila` |
+| Database type | PostgreSQL |
+| Host | `127.0.0.1` |
+| Porta | `5434` |
+| Database | `pagila` |
+| PostgreSQL role | `mcp_readonly_pagila` |
+| Schema | `public` |
+| Transport | stdio |
+
+### 5.2 Tool configurati
+
+Sono stati configurati due tool principali:
+
+**execute_sql**
+
+Utilizzato per l'esecuzione delle query SQL.
+
+Parametri di sicurezza:
+
+- `readonly = true`
+- `max_rows = 1000`
+
+La modalità read-only limita le operazioni SQL ammesse dal tool.
+
+**search_objects**
+
+Utilizzato per individuare gli oggetti presenti nel database, come tabelle e altri elementi dello schema.
+
+### 5.3 Livelli di protezione
+
+La configurazione utilizza due livelli indipendenti:
+
+1. DBHub applica i propri controlli sulle operazioni SQL consentite.
+2. PostgreSQL applica i privilegi associati all'utente `mcp_readonly_pagila`.
+
+Questa configurazione permette di verificare il comportamento del sistema anche quando viene tentata un'operazione non consentita dal livello MCP.
+
+## 6. Integrazione con Claude Desktop
+
+Claude Desktop viene utilizzato come client MCP per interagire con il database tramite DBHub.
+
+Architettura:
 
 ```text
 Claude Desktop
@@ -223,89 +341,174 @@ Claude Desktop
      DBHub
       |
       v
-mcp_readonly
+mcp_readonly_pagila
       |
       v
- PostgreSQL
+   PostgreSQL
+      |
+      v
+     Pagila
 ```
 
-### Configurazione
+Il server DBHub viene avviato da Claude Desktop utilizzando il transport `stdio`.
 
-- LLM/client: Claude Desktop
-- MCP Server: DBHub
-- Database: PostgreSQL 17.11
-- Database name: `tesi_mcp`
-- PostgreSQL host port: `5433`
-- PostgreSQL role utilizzato da DBHub: `mcp_readonly`
-- DBHub: versione verificata durante l'esecuzione del laboratorio
-- modalità di accesso: read-only
+La configurazione del client è descritta nel documento:
 
-### Test effettuati
+`02_Laboratorio/client/claude-desktop.md`
 
-Sono state eseguite richieste in linguaggio naturale tramite Claude Desktop.
+## 7. Test sperimentali di sicurezza
 
-#### Identificazione del database
+Sono stati eseguiti test distinti per verificare i controlli applicati a livello MCP e quelli applicati direttamente da PostgreSQL.
 
-Claude ha utilizzato il tool MCP appropriato per verificare le informazioni sul database.
+### 7.1 Connessione tramite MCP
 
-Risultati:
+La connessione è stata verificata utilizzando Claude Desktop e il server MCP denominato `dbhub-thesis`.
 
-- database: `tesi_mcp`
-- ruolo PostgreSQL: `mcp_readonly`
+Query:
 
-#### Individuazione delle tabelle
+```sql
+SELECT current_database(), current_user;
+```
 
-La richiesta relativa alle tabelle presenti nel database ha restituito:
+Risultato:
 
-- `app.customers`
-- `app.employees`
-- `app.orders`
-- `app.payments`
+| Campo | Valore |
+|---|---|
+| `current_database` | `pagila` |
+| `current_user` | `mcp_readonly_pagila` |
 
-per un totale di 4 tabelle.
+La verifica conferma che DBHub utilizza il database e il ruolo PostgreSQL previsti.
 
-#### Conteggio dei clienti
+### 7.2 Test del controllo read-only DBHub
 
-La richiesta relativa al numero di clienti presenti in app.customers ha restituito:
+Attraverso Claude Desktop è stata eseguita la seguente query:
 
-`20`
+```sql
+SELECT COUNT(*) AS customers
+FROM public.customer;
+```
 
-#### Lettura dei dati
+Risultato:
 
-È stata eseguita una richiesta per ottenere i primi tre clienti della tabella app.customers.
+`999`
 
-La richiesta è stata tradotta dall'agente in una tool call MCP che ha provocato l'esecuzione di una query SQL read-only tramite DBHub.
+Successivamente è stato effettuato un tentativo di UPDATE:
 
-#### Tentativo di modifica
+```sql
+UPDATE public.customer
+SET first_name = first_name
+WHERE false;
+```
 
-È stata formulata una richiesta in linguaggio naturale per inserire un nuovo cliente.
+DBHub ha rifiutato l'operazione prima di inviarla a PostgreSQL.
 
-L'agente non ha potuto completare l'operazione perché la connessione DBHub/PostgreSQL utilizzata nel laboratorio è configurata in modalità read-only.
-
-Il database non ha subito modifiche e il numero di clienti è rimasto pari a 20.
-
-### Risultato della prima integrazione
-
-La configurazione dimostra il funzionamento della catena:
+Errore restituito:
 
 ```text
-linguaggio naturale
-       |
-       v
-      LLM
-       |
-       v
-   MCP Client
-       |
-       v
-     DBHub
-       |
-       v
- PostgreSQL
+code: READONLY_VIOLATION
+
+Read-only mode is enabled.
+Only the following SQL operations are allowed:
+select, with, explain, show
 ```
 
-e mostra che i controlli implementati a livello MCP e i privilegi del ruolo PostgreSQL possono essere utilizzati congiuntamente per limitare le operazioni dell'agente.
+È stata quindi eseguita nuovamente la query di conteggio:
 
-Questa configurazione costituisce la baseline del laboratorio per i successivi esperimenti di sicurezza.
+```sql
+SELECT COUNT(*) AS customers
+FROM public.customer;
+```
 
+Risultato:
 
+`999`
+
+Il test dimostra il funzionamento del controllo read-only implementato a livello DBHub.
+
+### 7.3 Test diretto dei privilegi PostgreSQL
+
+Per verificare indipendentemente il comportamento di PostgreSQL, è stato effettuato un collegamento diretto al database utilizzando l'utente `mcp_readonly_pagila`, senza passare da DBHub.
+
+Connessione:
+
+```powershell
+docker exec -it tesi-pagila psql -h 127.0.0.1 -U mcp_readonly_pagila -d pagila
+```
+
+Identificazione della connessione:
+
+```sql
+SELECT current_database(), current_user;
+```
+
+Risultato:
+
+- database: `pagila`;
+- utente: `mcp_readonly_pagila`.
+
+È stata successivamente avviata una transazione:
+
+```sql
+BEGIN;
+```
+
+Tentativo di modifica:
+
+```sql
+UPDATE public.customer
+SET first_name = first_name
+WHERE customer_id = 1;
+```
+
+PostgreSQL ha restituito:
+
+```text
+ERROR: permission denied for table customer
+```
+
+La transazione è stata annullata:
+
+```sql
+ROLLBACK;
+```
+
+Infine è stato eseguito nuovamente il conteggio:
+
+```sql
+SELECT COUNT(*) AS customers
+FROM public.customer;
+```
+
+Risultato:
+
+`999`
+
+Il test dimostra che PostgreSQL rifiuta autonomamente l'operazione di UPDATE quando viene utilizzato un ruolo privo dei relativi privilegi.
+
+### 7.4 Riepilogo dei risultati
+
+| Test | Livello di controllo | Risultato |
+|---|---|---|
+| Connessione a Pagila | MCP / PostgreSQL | Superato |
+| Lettura dei clienti | DBHub | Superato |
+| Tentativo UPDATE tramite MCP | DBHub | Bloccato |
+| Verifica dei privilegi PostgreSQL | Database | Superata |
+| Tentativo UPDATE diretto | PostgreSQL | Bloccato |
+| Verifica integrità dei dati | PostgreSQL | 999 clienti |
+
+È importante distinguere i due test di scrittura:
+
+- nel test tramite MCP, DBHub ha rifiutato la query in base alla propria modalità read-only;
+- nel test diretto, PostgreSQL ha rifiutato l'UPDATE per mancanza dei privilegi dell'utente.
+
+Il primo test non dimostra da solo il comportamento dei privilegi PostgreSQL, perché la query è stata respinta prima di raggiungere il database. Il secondo test verifica invece direttamente la protezione implementata dal DBMS.
+
+### 7.5 Considerazioni
+
+I risultati ottenuti mostrano l'efficacia di un approccio basato su più livelli di sicurezza.
+
+DBHub limita le operazioni SQL ammesse attraverso la propria configurazione, mentre PostgreSQL applica autonomamente i privilegi associati all'utente utilizzato per la connessione.
+
+La presenza di entrambi i controlli riduce il rischio che un errore di configurazione o un comportamento inatteso del livello MCP permetta all'agente di modificare i dati.
+
+Questa configurazione rappresenta la baseline sperimentale del laboratorio e costituisce il riferimento per i successivi test comparativi tra differenti MCP Server.
