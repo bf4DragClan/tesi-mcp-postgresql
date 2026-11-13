@@ -1,0 +1,47 @@
+
+# DBHub - SQL Injection Laboratory
+# Configuration example without real credentials
+
+[[sources]]
+id = "sqli"
+description = "SQL Injection security experiments on Pagila"
+type = "postgres"
+
+host = "127.0.0.1"
+port = 5434
+database = "pagila"
+
+user = "mcp_readonly_pagila"
+password = "INSERT_READONLY_PASSWORD"
+
+sslmode = "disable"
+search_path = "security_lab"
+
+connection_timeout = 15
+query_timeout = 30
+
+[[tools]]
+name = "search_customer_unsafe"
+description = "Experimental customer search using an intentionally vulnerable SQL function."
+source = "sqli"
+statement = "SELECT * FROM security_lab.search_customer_unsafe($1)"
+readonly = true
+max_rows = 10
+
+[[tools.parameters]]
+name = "last_name"
+type = "string"
+description = "Customer last name or controlled SQL injection test input"
+
+[[tools]]
+name = "search_customer_safe"
+description = "Customer search using static parameterized SQL."
+source = "sqli"
+statement = "SELECT * FROM security_lab.search_customer_safe($1)"
+readonly = true
+max_rows = 10
+
+[[tools.parameters]]
+name = "last_name"
+type = "string"
+description = "Customer last name or controlled SQL injection test input"

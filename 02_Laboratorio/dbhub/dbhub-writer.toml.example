@@ -1,0 +1,30 @@
+# DBHub - Profilo WRITER
+# Configurazione di esempio senza credenziali reali
+
+[[sources]]
+id = "pagila_writer"
+description = "Pagila security laboratory - Writer profile"
+type = "postgres"
+
+host = "127.0.0.1"
+port = 5434
+database = "pagila"
+
+user = "mcp_writer_pagila"
+password = "INSERISCI_PASSWORD_WRITER"
+
+sslmode = "disable"
+search_path = "security_lab"
+
+connection_timeout = 15
+query_timeout = 30
+
+[[tools]]
+name = "execute_sql"
+source = "pagila_writer"
+readonly = false
+max_rows = 1000
+
+[[tools]]
+name = "search_objects"
+source = "pagila_writer"
