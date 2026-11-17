@@ -1,80 +1,80 @@
-# Claude Desktop – Configurazione del laboratorio
+# Claude Desktop – Configurazione del laboratorio MCP
 
 ## 1. Obiettivo
 
-Claude Desktop viene utilizzato come client MCP per verificare l'interazione tra un agente basato su LLM, un MCP Server e un database PostgreSQL.
+Claude Desktop viene utilizzato come client MCP per verificare l'interazione tra un agente basato su Large Language Model (LLM), diversi MCP Server e un database PostgreSQL.
 
-Nel laboratorio, Claude Desktop comunica con DBHub attraverso il protocollo MCP. DBHub gestisce la connessione a PostgreSQL e mette a disposizione tool per interrogare il database.
+Nel laboratorio, Claude Desktop comunica con DBHub attraverso il Model Context Protocol (MCP).
 
-L'obiettivo è verificare il funzionamento della comunicazione end-to-end e analizzare i controlli di sicurezza applicati durante l'esecuzione delle query.
+DBHub espone strumenti per interrogare il database e, a seconda della configurazione e dei privilegi PostgreSQL utilizzati, eseguire differenti operazioni.
+
+L'obiettivo è confrontare il comportamento dei diversi profili di autorizzazione e verificare alcuni scenari di sicurezza.
 
 ## 2. Architettura
 
-L'architettura utilizzata è la seguente:
+L'architettura generale è:
 
 ```text
-          Utente
-            |
-            v
-      Claude Desktop
-            |
-            v
-         MCP Client
-            |
-            v
-           DBHub
-            |
-            v
-   mcp_readonly_pagila
-            |
-            v
-        PostgreSQL
-            |
-            v
-          Pagila
+                  Utente
+                    |
+                    v
+             Claude Desktop
+                    |
+                    v
+                MCP Client
+                    |
+        +-----------+-----------+
+        |           |           |
+        v           v           v
+   dbhub-thesis dbhub-writer dbhub-crud
+        |           |           |
+        v           v           v
+    PostgreSQL  PostgreSQL  PostgreSQL
+   read-only     writer       CRUD
+        |           |           |
+        +-----------+-----------+
+                    |
+                    v
+                  Pagila
+                 /      \
+             public  security_lab
 ```
 
-Claude Desktop svolge il ruolo di client MCP e agente LLM.
-
-DBHub opera come intermediario tra Claude Desktop e PostgreSQL, esponendo strumenti per l'esecuzione di query e la ricerca degli oggetti del database.
-
-PostgreSQL applica i privilegi associati all'utente utilizzato da DBHub.
+Per l'esperimento SQL Injection viene utilizzata una quarta connessione DBHub, denominata `dbhub-sqli`, che espone due custom tool dedicati.
 
 ## 3. Componenti utilizzati
 
 ### 3.1 Claude Desktop
 
-Claude Desktop viene utilizzato come applicazione client MCP.
+Claude Desktop è utilizzato come applicazione client MCP.
 
-L'applicazione permette di configurare server MCP locali e di utilizzare i relativi tool durante le conversazioni.
+L'applicazione consente di configurare server MCP locali e utilizzare i relativi tool durante le conversazioni.
 
-Nel laboratorio viene utilizzata la versione desktop installata su Windows tramite Microsoft Store.
-
-La configurazione del server MCP viene gestita attraverso:
+La configurazione viene gestita da:
 
 `Settings → Developer → Edit Config`
 
+Il server viene avviato localmente tramite Node.js.
+
 ### 3.2 DBHub
 
-DBHub è il server MCP utilizzato per l'accesso a PostgreSQL.
+DBHub è l'MCP Server utilizzato per accedere a PostgreSQL.
 
 Repository:
 
 https://github.com/bytebase/dbhub
 
-Il pacchetto viene avviato tramite Node.js e npm:
+Il pacchetto viene avviato tramite npm:
 
 `@bytebase/dbhub`
 
-La configurazione locale del server è contenuta in:
+Il transport utilizzato nel laboratorio è `stdio`.
 
-`02_Laboratorio/dbhub/dbhub-pagila.toml`
-
-La configurazione contiene le credenziali del ruolo PostgreSQL e non deve essere pubblicata nel repository.
+La configurazione di ogni server è contenuta in un file TOML distinto.
 
 ### 3.3 PostgreSQL e Pagila
 
-Il database è eseguito in un container Docker.
+Il database viene eseguito tramite Docker.
 
 | Parametro | Valore |
 |---|---|
@@ -82,15 +82,109 @@ Il database è eseguito in un container Docker.
 | Database | `pagila` |
 | Host | `127.0.0.1` |
 | Porta | `5434` |
-| Utente MCP | `mcp_readonly_pagila` |
+| Versione PostgreSQL verificata | 18.6 |
 
-DBHub utilizza un account dedicato con privilegi di sola lettura.
+Gli account PostgreSQL utilizzati dagli MCP Server sono distinti in base al profilo di autorizzazione.
 
-## 4. Configurazione MCP di Claude Desktop
+## 4. Server MCP configurati
 
-Claude Desktop avvia DBHub localmente utilizzando il transport `stdio`.
+Sono state configurate quattro connessioni indipendenti.
 
-La configurazione MCP deve essere inserita nella sezione `mcpServers` del file aperto tramite `Settings → Developer → Edit Config`.
+### 4.1 dbhub-thesis
+
+Configurazione:
+
+`02_Laboratorio/dbhub/dbhub-pagila.toml`
+
+Ruolo PostgreSQL:
+
+`mcp_readonly_pagila`
+
+Caratteristiche:
+
+- accesso al database Pagila;
+- lettura delle tabelle originali;
+- accesso in lettura alle tabelle sperimentali;
+- tool `execute_sql` in modalità `readonly = true`;
+- tool `search_objects`.
+
+Questa connessione costituisce la baseline read-only del laboratorio.
+
+### 4.2 dbhub-writer
+
+Configurazione:
+
+`02_Laboratorio/dbhub/dbhub-writer.toml`
+
+Ruolo PostgreSQL:
+
+`mcp_writer_pagila`
+
+Caratteristiche:
+
+- accesso allo schema `security_lab`;
+- SELECT;
+- INSERT;
+- UPDATE;
+- nessun privilegio DELETE;
+- tool `execute_sql` configurato con `readonly = false`;
+- tool `search_objects`.
+
+DBHub permette l'esecuzione delle operazioni di scrittura, mentre PostgreSQL applica le autorizzazioni del ruolo.
+
+### 4.3 dbhub-crud
+
+Configurazione:
+
+`02_Laboratorio/dbhub/dbhub-crud.toml`
+
+Ruolo PostgreSQL:
+
+`mcp_crud_pagila`
+
+Caratteristiche:
+
+- accesso allo schema `security_lab`;
+- SELECT;
+- INSERT;
+- UPDATE;
+- DELETE;
+- nessun privilegio TRUNCATE;
+- tool `execute_sql` configurato con `readonly = false`;
+- tool `search_objects`.
+
+Questa connessione viene utilizzata per verificare le operazioni CRUD complete.
+
+### 4.4 dbhub-sqli
+
+Configurazione:
+
+`02_Laboratorio/dbhub/dbhub-sqli.toml`
+
+Ruolo PostgreSQL:
+
+`mcp_readonly_pagila`
+
+Caratteristiche:
+
+- accesso in sola lettura;
+- schema di lavoro `security_lab`;
+- nessun tool SQL generico `execute_sql`;
+- esposizione di due custom tool:
+  - `search_customer_unsafe`;
+  - `search_customer_safe`.
+
+La connessione è dedicata all'esperimento SQL Injection.
+
+Le due funzioni PostgreSQL sottostanti utilizzano rispettivamente SQL dinamico vulnerabile e SQL statico parametrizzato.
+
+## 5. Configurazione di Claude Desktop
+
+Il file di configurazione viene aperto direttamente da Claude Desktop attraverso:
+
+`Settings → Developer → Edit Config`
+
+La sezione `mcpServers` contiene le connessioni MCP.
 
 Esempio:
 
@@ -105,98 +199,87 @@ Esempio:
         "--transport",
         "stdio",
         "--config",
-        "C:\\PERCORSO\\DEL\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-pagila.toml"
+        "C:\\PERCORSO\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-pagila.toml"
+      ]
+    },
+    "dbhub-writer": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@bytebase/dbhub@latest",
+        "--transport",
+        "stdio",
+        "--config",
+        "C:\\PERCORSO\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-writer.toml"
+      ]
+    },
+    "dbhub-crud": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@bytebase/dbhub@latest",
+        "--transport",
+        "stdio",
+        "--config",
+        "C:\\PERCORSO\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-crud.toml"
+      ]
+    },
+    "dbhub-sqli": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@bytebase/dbhub@latest",
+        "--transport",
+        "stdio",
+        "--config",
+        "C:\\PERCORSO\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-sqli.toml"
       ]
     }
   }
 }
 ```
 
-Il percorso della configurazione deve essere sostituito con quello effettivo del progetto sul computer utilizzato.
+Il percorso deve essere sostituito con quello effettivo del progetto sul computer utilizzato.
 
-Se il file JSON contiene già altre impostazioni, queste devono essere mantenute. Il blocco `mcpServers` deve essere inserito nell'oggetto principale del JSON, senza cancellare le preferenze esistenti.
+Se il file contiene altre preferenze o server MCP, queste devono essere mantenute.
 
-Il nome assegnato al server è:
+Dopo ogni modifica alla configurazione è necessario salvare il file e riavviare completamente Claude Desktop.
 
-`dbhub-thesis`
+## 6. Verifica dell'identità delle connessioni
 
-### 4.1 Avvio e verifica
-
-Dopo aver salvato la configurazione:
-
-1. Chiudere completamente Claude Desktop.
-2. Riaprire l'applicazione.
-3. Aprire una nuova conversazione.
-4. Verificare che il server `dbhub-thesis` risulti disponibile.
-5. Eseguire una query di prova utilizzando il server MCP.
-
-Il log di avvio di DBHub permette di verificare quale file TOML sia stato caricato.
-
-La configurazione corretta deve riportare:
-
-```text
-Configuration source: dbhub-pagila.toml
-```
-
-e la sorgente PostgreSQL deve corrispondere al database Pagila sulla porta 5434.
-
-## 5. Tool MCP disponibili
-
-La configurazione DBHub utilizzata nel laboratorio espone due tool principali.
-
-### execute_sql
-
-Permette di eseguire query SQL sul database.
-
-Configurazione:
-
-- sorgente: `pagila`;
-- modalità: `readonly = true`;
-- limite massimo di righe restituite: `1000`.
-
-La modalità read-only consente soltanto le operazioni SQL ammesse dalla configurazione del server.
-
-### search_objects
-
-Permette di individuare gli oggetti presenti nel database, come tabelle e altri elementi dello schema.
-
-## 6. Test di connessione
-
-Per verificare che Claude Desktop utilizzi il database e il ruolo corretti, è stata eseguita tramite DBHub la seguente query:
+Per verificare che ogni server utilizzi il corretto account PostgreSQL è stata eseguita la seguente query:
 
 ```sql
 SELECT current_database(), current_user;
 ```
 
-Risultato ottenuto:
+Risultati ottenuti:
 
-| Campo | Valore |
-|---|---|
-| `current_database` | `pagila` |
-| `current_user` | `mcp_readonly_pagila` |
+| Server MCP | Database | Utente PostgreSQL |
+|---|---|---|
+| `dbhub-thesis` | `pagila` | `mcp_readonly_pagila` |
+| `dbhub-writer` | `pagila` | `mcp_writer_pagila` |
+| `dbhub-crud` | `pagila` | `mcp_crud_pagila` |
+| `dbhub-sqli` | `pagila` | `mcp_readonly_pagila` |
 
-Il risultato conferma il corretto collegamento tra Claude Desktop, DBHub e PostgreSQL.
+La verifica dimostra che le connessioni utilizzano effettivamente identità PostgreSQL differenti.
 
-## 7. Test delle operazioni SQL
+## 7. Test tramite dbhub-thesis
 
-### 7.1 Lettura dei dati
+È stata verificata la lettura dei dati originali di Pagila.
 
-È stata eseguita tramite Claude Desktop la query:
+La query:
 
 ```sql
 SELECT COUNT(*) AS customers
 FROM public.customer;
 ```
 
-Il risultato restituito è stato:
+ha restituito:
 
 `999`
 
-La lettura dei dati è stata completata correttamente.
-
-### 7.2 Tentativo di UPDATE tramite MCP
-
-Per verificare il comportamento del controllo read-only di DBHub è stato eseguito il seguente tentativo:
+È stato successivamente tentato un UPDATE:
 
 ```sql
 UPDATE public.customer
@@ -204,9 +287,7 @@ SET first_name = first_name
 WHERE false;
 ```
 
-DBHub ha respinto la query prima dell'invio a PostgreSQL.
-
-Errore restituito:
+DBHub ha respinto la query con:
 
 ```text
 code: READONLY_VIOLATION
@@ -216,53 +297,140 @@ Only the following SQL operations are allowed:
 select, with, explain, show
 ```
 
-È stato quindi eseguito un nuovo conteggio dei clienti:
+Una nuova SELECT ha confermato che i clienti erano ancora 999.
 
-```sql
-SELECT COUNT(*) AS customers
-FROM public.customer;
-```
+## 8. Test tramite dbhub-writer
 
-Il risultato è rimasto pari a `999`.
+Il profilo writer è stato utilizzato sulla tabella:
 
-Il test dimostra che il controllo read-only di DBHub impedisce l'esecuzione dell'operazione di modifica.
+`security_lab.test_customers`
 
-## 8. Verifica indipendente dei privilegi PostgreSQL
+### 8.1 INSERT
 
-Per distinguere il controllo DBHub da quello implementato direttamente nel DBMS, è stato eseguito un test collegandosi a PostgreSQL senza utilizzare l'MCP Server.
+È stato inserito un record temporaneo:
 
-Connessione:
+| Campo | Valore |
+|---|---|
+| customer_id | 9010 |
+| first_name | Claude |
+| last_name | Writer |
+| email | claude.writer@example.test |
+| notes | MCP writer test |
 
-```powershell
-docker exec -it tesi-pagila psql -h 127.0.0.1 -U mcp_readonly_pagila -d pagila
-```
+L'inserimento è riuscito ed è stato verificato con una SELECT.
 
-Dopo aver verificato l'identità dell'utente, è stata avviata una transazione ed è stato tentato un UPDATE sulla tabella `public.customer`.
+### 8.2 UPDATE
+
+Il campo `notes` è stato aggiornato al valore:
+
+`Updated through DBHub Writer`
+
+L'aggiornamento è riuscito.
+
+### 8.3 DELETE
+
+È stato tentato un DELETE sul record 9010.
 
 PostgreSQL ha restituito:
 
 ```text
-ERROR: permission denied for table customer
+error: permission denied for table test_customers
+code: EXECUTION_ERROR
 ```
 
-La transazione è stata annullata tramite `ROLLBACK`.
+Una SELECT successiva ha confermato che il record era ancora presente.
 
-Il numero di clienti è rimasto pari a `999`.
+Il test dimostra che il ruolo writer può inserire e modificare record, ma non eliminarli.
 
-Questo test conferma che PostgreSQL applica autonomamente i privilegi del ruolo, anche quando DBHub non è coinvolto.
+## 9. Test tramite dbhub-crud
 
-## 9. Risultato dell'integrazione
+Il profilo CRUD è stato utilizzato per verificare tutte le operazioni.
 
-L'integrazione tra Claude Desktop, DBHub e PostgreSQL Pagila è stata verificata con successo.
+Le operazioni eseguite sono state:
 
-I test hanno dimostrato che:
+1. eliminazione del record temporaneo 9010;
+2. inserimento di un nuovo record con ID 9020;
+3. aggiornamento del campo `notes`;
+4. verifica del record aggiornato;
+5. eliminazione del record 9020;
+6. verifica dell'assenza del record.
 
-- Claude Desktop riesce a utilizzare il server MCP locale;
-- DBHub si connette al database `pagila`;
-- la connessione utilizza il ruolo `mcp_readonly_pagila`;
-- le query di lettura vengono eseguite correttamente;
-- DBHub blocca le operazioni non ammesse dalla modalità read-only;
-- PostgreSQL impedisce autonomamente l'UPDATE quando viene utilizzato il ruolo privo dei relativi privilegi;
-- i dati del database sono rimasti invariati durante i test.
+L'inserimento e l'aggiornamento sono riusciti.
 
-Questa configurazione costituisce la prima integrazione end-to-end del laboratorio e la baseline di riferimento per i successivi esperimenti di sicurezza e confronto tra MCP Server.
+Entrambi i DELETE sono stati eseguiti correttamente.
+
+La verifica finale ha restituito zero righe per il record 9020.
+
+Il test conferma il funzionamento del profilo CRUD.
+
+## 10. Esperimento SQL Injection tramite dbhub-sqli
+
+Il server `dbhub-sqli` è dedicato alla verifica di due implementazioni della ricerca di clienti.
+
+I custom tool disponibili sono:
+
+- `search_customer_unsafe`;
+- `search_customer_safe`.
+
+Entrambi ricevono un parametro stringa denominato `last_name`.
+
+### 10.1 Ricerca normale
+
+Utilizzando `search_customer_unsafe` con:
+
+`Lovelace`
+
+è stato restituito un singolo record:
+
+Ada Lovelace.
+
+### 10.2 SQL Injection sulla funzione vulnerabile
+
+È stato passato il seguente valore:
+
+```text
+x' OR '1'='1
+```
+
+Il custom tool `search_customer_unsafe` ha restituito tutti e quattro i clienti presenti nella tabella sperimentale.
+
+Il test conferma che la concatenazione dell'input nella query dinamica permette di alterare la condizione WHERE.
+
+### 10.3 Verifica della funzione sicura
+
+È stato utilizzato lo stesso valore con `search_customer_safe`.
+
+Risultato:
+
+`0 record`
+
+La funzione ha trattato l'intero input come valore letterale del parametro e non come codice SQL.
+
+### 10.4 UNION-based SQL Injection
+
+È stato inoltre eseguito un test di tipo UNION sul custom tool vulnerabile.
+
+Durante il test è stato individuato il numero di colonne atteso dalla funzione, pari a quattro.
+
+La verifica ha permesso di ottenere:
+
+| Informazione | Risultato |
+|---|---|
+| Database corrente | `pagila` |
+| Utente corrente | `mcp_readonly_pagila` |
+| Versione PostgreSQL | 18.6 |
+
+Il payload UNION esatto non è stato conservato nel resoconto dell'esperimento e non viene ricostruito in questo documento.
+
+## 11. Considerazioni finali
+
+L'integrazione ha permesso di verificare quattro server MCP distinti, collegati allo stesso database ma autenticati con differenti identità PostgreSQL.
+
+I test CRUD hanno confermato che i privilegi del DBMS vengono applicati anche quando le query vengono eseguite tramite DBHub.
+
+L'esperimento SQL Injection ha inoltre dimostrato che una connessione read-only può comunque essere vulnerabile a problemi di integrità della costruzione delle query e di esposizione dei dati.
+
+La parametrizzazione del tool MCP non protegge automaticamente una funzione PostgreSQL che utilizza SQL dinamico concatenando input non affidabili.
+
+La configurazione costituisce una baseline sperimentale per i successivi confronti tra differenti MCP Server.
+

@@ -1,24 +1,26 @@
-# Sicurezza dei database nell'interazione con LLM tramite MCP Server
+# Sicurezza dei database nell'interazione tra LLM e MCP Server
 
 ## 1. Introduzione
 
-Questo repository contiene il materiale di ricerca e il laboratorio sperimentale sviluppati nell'ambito di una tesi dedicata alla sicurezza dell'accesso ai database relazionali da parte di applicazioni basate su Large Language Models (LLM) e agenti AI.
+Questo repository raccoglie il materiale di ricerca e il laboratorio sperimentale sviluppati nell'ambito di una tesi dedicata alla sicurezza dell'accesso ai database relazionali da parte di applicazioni basate su Large Language Models (LLM) e agenti AI.
 
 Il progetto si concentra sull'utilizzo del Model Context Protocol (MCP) come livello di comunicazione tra un agente AI e un database PostgreSQL.
 
-L'obiettivo è analizzare i rischi di sicurezza che possono emergere quando un agente AI dispone di strumenti per interrogare o modificare un database e studiare le contromisure implementate a livello di MCP Server e di DBMS.
+L'obiettivo è analizzare i principali rischi di sicurezza che possono emergere quando un agente AI dispone di strumenti per interrogare o modificare un database e studiare le contromisure applicabili a livello di MCP Server e di DBMS.
 
 ## 2. Obiettivi della ricerca
 
 Il progetto mira a:
 
-- analizzare l'architettura e il funzionamento di diversi MCP Server per database;
-- individuare le principali superfici di attacco nell'interazione tra LLM e database;
-- studiare i meccanismi di autenticazione e autorizzazione;
-- analizzare il principio del Least Privilege;
-- verificare l'efficacia dei controlli read-only;
-- confrontare le garanzie di sicurezza offerte da differenti implementazioni MCP;
-- realizzare un laboratorio riproducibile per effettuare test sperimentali.
+- analizzare architetture e funzionalità di differenti MCP Server per database;
+- identificare le principali superfici di attacco nell'interazione tra LLM e database;
+- studiare autenticazione e autorizzazione;
+- verificare il principio del Least Privilege;
+- analizzare i controlli sulle operazioni SQL;
+- studiare le vulnerabilità SQL Injection;
+- confrontare query dinamiche e query parametrizzate;
+- verificare l'efficacia di più livelli di protezione;
+- realizzare un laboratorio riproducibile per test comparativi.
 
 ## 3. MCP Server analizzati
 
@@ -53,10 +55,15 @@ Tesi MCP PostgreSQL/
 │   │   └── claude-desktop.md
 │   │
 │   ├── database/
-│   │   └── setup.md
+│   │   ├── setup.md
+│   │   ├── security_lab.sql
+│   │   └── sql_injection_lab.sql
 │   │
 │   ├── dbhub/
-│   │   └── dbhub-pagila.toml.example
+│   │   ├── dbhub-pagila.toml.example
+│   │   ├── dbhub-writer.toml.example
+│   │   ├── dbhub-crud.toml.example
+│   │   └── dbhub-sqli.toml.example
 │   │
 │   ├── pagila-source/
 │   │
@@ -67,13 +74,13 @@ Tesi MCP PostgreSQL/
 └── README.md
 ```
 
-La directory `pagila-source` è un Git submodule e contiene il codice e gli script del progetto Pagila.
+La directory `pagila-source` è un Git submodule e contiene il codice e gli script del database Pagila.
 
-Le configurazioni locali che contengono credenziali, come `.env.pagila` e `dbhub-pagila.toml`, non vengono versionate.
+Le configurazioni locali che contengono credenziali, come `.env.pagila` e i file TOML reali di DBHub, non vengono pubblicate su GitHub.
 
 ## 5. Laboratorio sperimentale
 
-### 5.1 Database
+### 5.1 Database Pagila
 
 Il laboratorio utilizza Pagila, un database di esempio basato su PostgreSQL e relativo a un sistema di noleggio cinematografico.
 
@@ -81,7 +88,7 @@ Repository:
 
 https://github.com/devrimgunduz/pagila
 
-Il database viene eseguito tramite Docker Compose.
+Il database è eseguito tramite Docker Compose.
 
 | Parametro | Valore |
 |---|---|
@@ -92,187 +99,227 @@ Il database viene eseguito tramite Docker Compose.
 | Porta host | `5434` |
 | Volume | `02_laboratorio_pagila_data` |
 
-Il dataset contiene diverse tabelle relazionali utilizzate per gli esperimenti.
+### 5.2 Dati disponibili
 
-Tra i dati verificati:
+Tra le principali tabelle del dataset:
 
 | Tabella | Record |
 |---|---:|
-| `customer` | 999 |
-| `film` | 1000 |
-| `rental` | 51805 |
-| `payment` | 51061 |
-| `inventory` | 4581 |
-| `actor` | 200 |
+| `public.customer` | 999 |
+| `public.film` | 1000 |
+| `public.rental` | 51805 |
+| `public.payment` | 51061 |
+| `public.inventory` | 4581 |
+| `public.actor` | 200 |
 
-### 5.2 Ruolo PostgreSQL dedicato
+### 5.3 Schema sperimentale
 
-Per l'accesso tramite MCP Server è stato creato il ruolo:
+Per gli esperimenti è stato creato lo schema:
 
-`mcp_readonly_pagila`
+`security_lab`
 
-Il ruolo dispone dei privilegi necessari per connettersi al database ed eseguire operazioni di lettura sulle tabelle dello schema `public`.
+Lo schema contiene due tabelle sintetiche:
 
-Non dispone dei privilegi di INSERT, UPDATE e DELETE sulle tabelle.
+- `test_customers`;
+- `test_accounts`.
 
-L'utilizzo di un account dedicato permette di applicare il principio del Least Privilege e di evitare che l'MCP Server utilizzi direttamente l'account amministrativo PostgreSQL.
+Le tabelle contengono quattro record iniziali ciascuna.
 
-### 5.3 DBHub
+Questa separazione consente di eseguire test CRUD e SQL Injection senza alterare il dataset originale Pagila.
+
+## 6. Ruoli e autorizzazioni PostgreSQL
+
+Sono stati configurati tre ruoli PostgreSQL con privilegi differenti.
+
+| Ruolo | SELECT | INSERT | UPDATE | DELETE |
+|---|---:|---:|---:|---:|
+| `mcp_readonly_pagila` | Sì | No | No | No |
+| `mcp_writer_pagila` | Sì | Sì | Sì | No |
+| `mcp_crud_pagila` | Sì | Sì | Sì | Sì |
+
+I ruoli Writer e CRUD operano esclusivamente nello schema sperimentale `security_lab`.
+
+Il ruolo read-only viene utilizzato anche per l'accesso in lettura allo schema originale `public` di Pagila.
+
+Tutti e tre i ruoli non dispongono del privilegio TRUNCATE né di privilegi amministrativi.
+
+La configurazione permette di studiare il principio del Least Privilege e gli effetti di differenti livelli di autorizzazione.
+
+## 7. Integrazione con DBHub e Claude Desktop
 
 DBHub costituisce il primo MCP Server integrato nel laboratorio.
 
-La configurazione utilizza:
+Claude Desktop viene utilizzato come client MCP.
 
-- transport `stdio`;
-- database PostgreSQL `pagila`;
-- ruolo `mcp_readonly_pagila`;
-- tool `execute_sql` in modalità read-only;
-- limite massimo di 1000 righe;
-- tool `search_objects`.
-
-La configurazione locale contenente le credenziali è esclusa da Git. Nel repository è presente solamente il relativo file di esempio.
-
-### 5.4 Claude Desktop
-
-Claude Desktop viene utilizzato come client MCP per interagire con DBHub.
-
-L'applicazione avvia localmente il server tramite Node.js e stabilisce la comunicazione attraverso il transport `stdio`.
-
-L'integrazione permette di formulare richieste in linguaggio naturale e utilizzare i tool MCP per interrogare il database PostgreSQL.
-
-La configurazione è descritta in:
-
-`02_Laboratorio/client/claude-desktop.md`
-
-## 6. Risultati sperimentali iniziali
-
-È stata verificata la prima integrazione end-to-end:
+L'architettura generale è:
 
 ```text
-Claude Desktop
-      |
-      v
-   MCP Client
-      |
-      v
-     DBHub
-      |
-      v
-mcp_readonly_pagila
-      |
-      v
-   PostgreSQL
-      |
-      v
-     Pagila
+              Claude Desktop
+                    |
+                    v
+                 MCP Client
+                    |
+          +---------+---------+
+          |         |         |
+          v         v         v
+    dbhub-thesis dbhub-writer dbhub-crud
+          |         |         |
+          v         v         v
+       PostgreSQL PostgreSQL PostgreSQL
+          |         |         |
+          +---------+---------+
+                    |
+                    v
+                  Pagila
 ```
 
-### 6.1 Verifica della connessione
+È stata configurata anche una quarta connessione:
 
-Attraverso DBHub è stata eseguita:
+`dbhub-sqli`
+
+Questa è dedicata esclusivamente all'esperimento SQL Injection e utilizza due custom tool.
+
+### 7.1 Connessioni verificate
+
+| Server MCP | Ruolo PostgreSQL | Utilizzo |
+|---|---|---|
+| `dbhub-thesis` | `mcp_readonly_pagila` | Sola lettura |
+| `dbhub-writer` | `mcp_writer_pagila` | INSERT e UPDATE |
+| `dbhub-crud` | `mcp_crud_pagila` | Operazioni CRUD |
+| `dbhub-sqli` | `mcp_readonly_pagila` | Test SQL Injection |
+
+Per ogni connessione è stata verificata l'identità dell'utente PostgreSQL mediante:
 
 ```sql
 SELECT current_database(), current_user;
 ```
 
-Risultato:
+I risultati hanno confermato che ogni server utilizza il ruolo previsto.
 
-| Campo | Valore |
-|---|---|
-| Database | `pagila` |
-| Utente | `mcp_readonly_pagila` |
+## 8. Risultati sperimentali CRUD
 
-### 6.2 Controllo read-only DBHub
+Le autorizzazioni PostgreSQL sono state verificate direttamente e successivamente attraverso DBHub e Claude Desktop.
 
-È stata eseguita una query di lettura sulla tabella `public.customer`, che ha restituito 999 record.
+### 8.1 Test read-only
 
-Un successivo tentativo di UPDATE è stato rifiutato da DBHub con il codice:
+Attraverso `dbhub-thesis`:
 
-`READONLY_VIOLATION`
+- SELECT eseguita correttamente;
+- tentativo di UPDATE rifiutato con `READONLY_VIOLATION`;
+- numero dei clienti originali rimasto pari a 999.
 
-Il server ha indicato che, in modalità read-only, sono ammesse soltanto le operazioni SELECT, WITH, EXPLAIN e SHOW.
-
-Il conteggio dei clienti è rimasto pari a 999.
-
-### 6.3 Controllo dei privilegi PostgreSQL
-
-È stato effettuato un test indipendente collegandosi direttamente al database con l'utente `mcp_readonly_pagila`, senza passare attraverso DBHub.
-
-Il tentativo di UPDATE sulla tabella `public.customer` è stato rifiutato da PostgreSQL con:
+Un successivo test diretto su PostgreSQL ha restituito:
 
 `ERROR: permission denied for table customer`
 
-La transazione è stata annullata tramite ROLLBACK.
+Questo ha verificato che anche il DBMS impedisce autonomamente l'UPDATE.
 
-Il conteggio finale dei clienti è rimasto pari a 999.
+### 8.2 Test writer
 
-### 6.4 Interpretazione
+Attraverso `dbhub-writer`:
 
-I test hanno verificato due livelli di protezione distinti:
+- INSERT consentito;
+- UPDATE consentito;
+- DELETE rifiutato da PostgreSQL.
 
-1. DBHub blocca le operazioni SQL non ammesse dalla propria configurazione read-only.
-2. PostgreSQL impedisce autonomamente le operazioni non autorizzate in base ai privilegi del ruolo.
+È stato inserito un record temporaneo con ID 9010, successivamente aggiornato.
 
-I risultati costituiscono una prima evidenza sperimentale dell'utilità della difesa a più livelli (*defense in depth*).
+Il tentativo di eliminazione è stato respinto e il record è rimasto presente.
 
-Questa baseline sarà utilizzata come riferimento per i successivi esperimenti comparativi.
+### 8.3 Test CRUD
 
-## 7. Avvio del laboratorio
+Attraverso `dbhub-crud`:
 
-Per inizializzare il submodule Pagila dopo aver clonato il repository:
+- INSERT consentito;
+- UPDATE consentito;
+- DELETE consentito.
+
+È stato eliminato il record temporaneo 9010, inserito il record 9020, modificato e successivamente eliminato.
+
+La verifica finale ha confermato che il record 9020 non era più presente.
+
+I test hanno confermato il comportamento atteso dei tre profili di autorizzazione.
+
+## 9. Esperimento SQL Injection
+
+È stato realizzato un esperimento dedicato allo studio delle vulnerabilità SQL Injection.
+
+L'esperimento utilizza due funzioni PostgreSQL:
+
+- `security_lab.search_customer_unsafe`;
+- `security_lab.search_customer_safe`.
+
+La prima costruisce dinamicamente una query concatenando direttamente l'input ricevuto.
+
+La seconda utilizza una query statica parametrizzata.
+
+Entrambe vengono esposte attraverso il server DBHub `dbhub-sqli`.
+
+### 9.1 Funzione vulnerabile
+
+È stato utilizzato il payload:
+
+```text
+x' OR '1'='1
+```
+
+Il custom tool `search_customer_unsafe` ha restituito tutti e quattro i clienti presenti nella tabella sperimentale, invece di filtrare i risultati.
+
+Il test ha confermato la vulnerabilità SQL Injection.
+
+### 9.2 Funzione parametrizzata
+
+Lo stesso input è stato utilizzato con `search_customer_safe`.
+
+Risultato:
+
+`0 record`
+
+La funzione ha trattato l'intero input come valore letterale, senza modificarne la struttura SQL.
+
+### 9.3 Test UNION-based
+
+È stata inoltre verificata una SQL Injection basata su UNION.
+
+Il test ha permesso di individuare una struttura a quattro colonne e recuperare informazioni sull'istanza PostgreSQL:
+
+- database: `pagila`;
+- utente: `mcp_readonly_pagila`;
+- versione: PostgreSQL 18.6.
+
+Il payload UNION esatto non è stato conservato nel resoconto sperimentale.
+
+### 9.4 Interpretazione
+
+L'esperimento dimostra che:
+
+- una query dinamica costruita concatenando input non affidabili può essere vulnerabile;
+- una SELECT vulnerabile può restituire dati non previsti anche con un ruolo read-only;
+- il parametro `$1` del tool MCP non corregge automaticamente una funzione PostgreSQL che concatena internamente il parametro;
+- una query statica parametrizzata evita il comportamento osservato nella funzione vulnerabile.
+
+La documentazione completa è contenuta in:
+
+`02_Laboratorio/database/sql_injection_lab.md`
+
+## 10. Avvio del laboratorio
+
+Dopo aver clonato il repository, inizializzare il submodule Pagila:
 
 ```powershell
 git submodule update --init --recursive
 ```
 
-Per configurare l'ambiente, dalla directory `02_Laboratorio` copiare il file di esempio:
+Spostarsi nella directory:
+
+```powershell
+cd 02_Laboratorio
+```
+
+Creare il file locale delle variabili d'ambiente:
 
 ```powershell
 Copy-Item .env.example .env.pagila
 ```
 
-Impostare la password amministrativa PostgreSQL in `.env.pagila`.
-
-Per avviare il container:
-
-```powershell
-docker compose --env-file .env.pagila up -d --build
-```
-
-Per verificare lo stato:
-
-```powershell
-docker compose --env-file .env.pagila ps
-```
-
-Per arrestare il container preservando i dati:
-
-```powershell
-docker compose --env-file .env.pagila down
-```
-
-Le credenziali locali non devono essere inserite nei commit o pubblicate su GitHub.
-
-## 8. Documentazione
-
-Per ulteriori dettagli:
-
-- `01_Ricerca_MCP/confronto.md`: confronto tra gli MCP Server analizzati.
-- `01_Ricerca_MCP/`: analisi individuali delle implementazioni.
-- `02_Laboratorio/database/setup.md`: configurazione completa del database e risultati dei test.
-- `02_Laboratorio/client/claude-desktop.md`: integrazione con Claude Desktop.
-- `02_Laboratorio/dbhub/dbhub-pagila.toml.example`: esempio di configurazione DBHub.
-
-## 9. Sviluppi successivi
-
-Le attività successive previste dal progetto includono:
-
-- approfondimento delle superfici di attacco degli MCP Server selezionati;
-- configurazione degli ulteriori MCP Server sul database Pagila;
-- progettazione di scenari sperimentali comuni;
-- confronto delle modalità di autenticazione e autorizzazione;
-- analisi dei controlli sulle query SQL;
-- verifica della gestione dei privilegi e delle operazioni potenzialmente pericolose;
-- valutazione delle garanzie di sicurezza offerte dalle diverse architetture.
-
-L'obiettivo finale è individuare i principali rischi associati all'accesso ai database da parte di agenti AI e valutare sperimentalmente l'efficacia delle contromisure disponibili.
+Inserire la password amministrativa PostgreSQL in
