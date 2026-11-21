@@ -1,4 +1,3 @@
-
 -- ============================================================
 -- LABORATORIO MCP SECURITY
 -- Database: pagila
@@ -46,8 +45,16 @@ CREATE TABLE IF NOT EXISTS security_lab.test_accounts (
         CHECK (status IN ('active', 'suspended', 'closed'))
 );
 
+-- Tabella dedicata al confronto tra DBHub writer e read-only.
+-- Non eliminare o azzerare la riga durante la ripetizione dei test.
+CREATE TABLE IF NOT EXISTS security_lab.mcp_readonly_probe (
+    id INTEGER PRIMARY KEY,
+    counter INTEGER NOT NULL DEFAULT 0
+);
+
 ALTER TABLE security_lab.test_customers OWNER TO postgres;
 ALTER TABLE security_lab.test_accounts OWNER TO postgres;
+ALTER TABLE security_lab.mcp_readonly_probe OWNER TO postgres;
 
 
 -- ------------------------------------------------------------
@@ -75,6 +82,12 @@ VALUES
     (103, 3, 2500.00, 'suspended'),
     (104, 4, 600.00, 'active')
 ON CONFLICT DO NOTHING;
+
+-- Inserisce il contatore solo se non esiste già.
+-- Preserva, ad esempio, il valore 1 osservato nei test 11 e 12.
+INSERT INTO security_lab.mcp_readonly_probe (id, counter)
+VALUES (1, 0)
+ON CONFLICT (id) DO NOTHING;
 
 
 -- ------------------------------------------------------------
@@ -195,12 +208,47 @@ IN SCHEMA security_lab
 GRANT SELECT, INSERT, UPDATE, DELETE
 ON TABLES TO mcp_crud_pagila;
 
+
+-- ------------------------------------------------------------
+-- 11. FUNZIONE DI PROVA: SELECT CON EFFETTI COLLATERALI
+-- ------------------------------------------------------------
+
+-- Funzione usata nei test di read-only di DBHub.
+-- La SELECT esterna chiama una funzione che tenta un UPDATE.
+-- SECURITY INVOKER: nessuna elevazione dei privilegi dell'utente.
+-- Schema della tabella esplicitato per evitare ambiguità.
+CREATE OR REPLACE FUNCTION security_lab.readonly_write_probe()
+RETURNS INTEGER
+LANGUAGE plpgsql
+VOLATILE
+SECURITY INVOKER
+AS $function$
+DECLARE
+    new_value INTEGER;
+BEGIN
+    UPDATE security_lab.mcp_readonly_probe
+    SET counter = counter + 1
+    WHERE id = 1
+    RETURNING counter INTO new_value;
+
+    RETURN new_value;
+END;
+$function$;
+
+-- Evita che qualunque ruolo possa eseguire la funzione
+-- attraverso il privilegio EXECUTE concesso di default a PUBLIC.
+REVOKE ALL ON FUNCTION security_lab.readonly_write_probe()
+FROM PUBLIC, mcp_readonly_pagila, mcp_writer_pagila, mcp_crud_pagila;
+
+-- Solo il ruolo writer e' necessario per questo confronto.
+-- Lo stesso ruolo e' usato dalle configurazioni MCP:
+--   dbhub-writer           (readonly = false)
+--   dbhub-readonly-writer  (readonly = true)
+GRANT EXECUTE ON FUNCTION security_lab.readonly_write_probe()
+TO mcp_writer_pagila;
+
 COMMIT;
 
 -- ============================================================
 -- FINE SCRIPT
 -- ============================================================
-
-
-
-

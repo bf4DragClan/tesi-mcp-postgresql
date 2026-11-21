@@ -2,191 +2,121 @@
 
 ## 1. Obiettivo
 
-Claude Desktop viene utilizzato come client MCP per verificare l'interazione tra un agente basato su Large Language Model (LLM), diversi MCP Server e un database PostgreSQL.
+Claude Desktop viene utilizzato come client MCP per verificare l'interazione tra un agente basato su Large Language Model (LLM), server MCP DBHub e un database PostgreSQL.
 
-Nel laboratorio, Claude Desktop comunica con DBHub attraverso il Model Context Protocol (MCP).
+Il laboratorio confronta configurazioni con privilegi differenti, distinguendo:
 
-DBHub espone strumenti per interrogare il database e, a seconda della configurazione e dei privilegi PostgreSQL utilizzati, eseguire differenti operazioni.
+- i controlli applicati dal tool MCP (in particolare `execute_sql` in modalità read-only);
+- i privilegi assegnati al ruolo PostgreSQL;
+- le vulnerabilità introdotte dalle funzioni SQL esposte tramite custom tool;
+- la gestione di input non affidabili nei tool predefiniti.
 
-L'obiettivo è confrontare il comportamento dei diversi profili di autorizzazione e verificare alcuni scenari di sicurezza.
+Le prove utilizzano esclusivamente tabelle e funzioni sperimentali nello schema `security_lab`, salvo le letture sul dataset originale Pagila.
 
 ## 2. Architettura
 
-L'architettura generale è:
-
 ```text
-                  Utente
-                    |
-                    v
-             Claude Desktop
-                    |
-                    v
-                MCP Client
-                    |
-        +-----------+-----------+
-        |           |           |
-        v           v           v
-   dbhub-thesis dbhub-writer dbhub-crud
-        |           |           |
-        v           v           v
-    PostgreSQL  PostgreSQL  PostgreSQL
-   read-only     writer       CRUD
-        |           |           |
-        +-----------+-----------+
-                    |
-                    v
-                  Pagila
-                 /      \
-             public  security_lab
+                      Utente
+                        |
+                        v
+                   Claude Desktop
+                     (client MCP)
+                        |
+       +----------------+----------------+----------------+
+       |                |                |                |
+       v                v                v                v
+  dbhub-thesis     dbhub-writer      dbhub-crud        dbhub-sqli
+       |                |                |                |
+  mcp_readonly     mcp_writer        mcp_crud        mcp_readonly
+       |                |                |                |
+       +----------------+----------------+----------------+
+                        |
+                        v
+                   PostgreSQL
+                     `pagila`
+                   /        \
+                public   security_lab
+                        ^
+                        |
+             dbhub-readonly-writer
+                (readonly=true)
+                        |
+                  mcp_writer
 ```
 
-Per l'esperimento SQL Injection viene utilizzata una quarta connessione DBHub, denominata `dbhub-sqli`, che espone due custom tool dedicati.
+La quinta connessione, `dbhub-readonly-writer`, riutilizza lo **stesso ruolo PostgreSQL** di `dbhub-writer`, ma imposta `readonly = true` su `execute_sql`. Questo confronto isola il contributo della protezione MCP rispetto ai privilegi del database.
 
 ## 3. Componenti utilizzati
 
 ### 3.1 Claude Desktop
 
-Claude Desktop è utilizzato come applicazione client MCP.
-
-L'applicazione consente di configurare server MCP locali e utilizzare i relativi tool durante le conversazioni.
-
-La configurazione viene gestita da:
-
-`Settings → Developer → Edit Config`
-
-Il server viene avviato localmente tramite Node.js.
+Claude Desktop avvia i server MCP locali e ne rende disponibili i tool durante le conversazioni. La configurazione si gestisce da **Settings → Developer → Edit Config**, nella sezione `mcpServers`.
 
 ### 3.2 DBHub
 
-DBHub è l'MCP Server utilizzato per accedere a PostgreSQL.
+- Repository: https://github.com/bytebase/dbhub
+- Pacchetto npm: `@bytebase/dbhub`
+- Trasporto: `stdio`
+- Configurazione: un file TOML distinto per ogni connessione.
 
-Repository:
-
-https://github.com/bytebase/dbhub
-
-Il pacchetto viene avviato tramite npm:
-
-`@bytebase/dbhub`
-
-Il transport utilizzato nel laboratorio è `stdio`.
-
-La configurazione di ogni server è contenuta in un file TOML distinto.
+Durante la preparazione degli esperimenti è stata individuata la versione **1.7.1** nella cache npm. La quinta configurazione è stata impostata con `@bytebase/dbhub@1.7.1`; i profili precedenti erano documentati con `@latest`. La sola presenza della versione in cache **non certifica** quale versione sia stata avviata dalle altre connessioni: per una riproducibilità completa occorre registrarne il comando effettivo o uniformare esplicitamente le versioni.
 
 ### 3.3 PostgreSQL e Pagila
 
-Il database viene eseguito tramite Docker.
-
 | Parametro | Valore |
 |---|---|
-| Container | `tesi-pagila` |
+| Container Docker | `tesi-pagila` |
 | Database | `pagila` |
 | Host | `127.0.0.1` |
-| Porta | `5434` |
-| Versione PostgreSQL verificata | 18.6 |
-
-Gli account PostgreSQL utilizzati dagli MCP Server sono distinti in base al profilo di autorizzazione.
+| Porta host | `5434` |
+| Versione PostgreSQL verificata | `18.6` |
+| Schemi | `public`, `security_lab` |
 
 ## 4. Server MCP configurati
 
-Sono state configurate quattro connessioni indipendenti.
+Sono state verificate **cinque connessioni MCP**; impiegano **tre ruoli PostgreSQL**.
 
-### 4.1 dbhub-thesis
+| Server MCP in Claude | File TOML locale | Ruolo PostgreSQL | `execute_sql` |
+|---|---|---|---|
+| `dbhub-thesis` | `dbhub-pagila.toml` | `mcp_readonly_pagila` | `readonly = true` |
+| `dbhub-writer` | `dbhub-writer.toml` | `mcp_writer_pagila` | `readonly = false` |
+| `dbhub-crud` | `dbhub-crud.toml` | `mcp_crud_pagila` | `readonly = false` |
+| `dbhub-sqli` | `dbhub-sqli.toml` | `mcp_readonly_pagila` | Non esposto: solo custom tool |
+| `dbhub-readonly-writer` | `dbhub-readonly-writer.toml` | `mcp_writer_pagila` | `readonly = true` |
 
-Configurazione:
+Tutti i file si trovano nella directory `02_Laboratorio/dbhub/`. Le configurazioni reali contengono credenziali e sono escluse da Git; sul repository si pubblicano soltanto i corrispondenti `.toml.example`.
 
-`02_Laboratorio/dbhub/dbhub-pagila.toml`
+### 4.1 `dbhub-thesis`
 
-Ruolo PostgreSQL:
+Configurazione di riferimento in sola lettura: `mcp_readonly_pagila`, tool `execute_sql` con `readonly = true` e `search_objects`. Permette di leggere Pagila ma non di modificare le tabelle.
 
-`mcp_readonly_pagila`
+### 4.2 `dbhub-writer`
 
-Caratteristiche:
+Utilizza `mcp_writer_pagila`, con `SELECT`, `INSERT`, `UPDATE` sulle tabelle sperimentali e senza `DELETE`. Il tool `execute_sql` ha `readonly = false`; è disponibile anche `search_objects`.
 
-- accesso al database Pagila;
-- lettura delle tabelle originali;
-- accesso in lettura alle tabelle sperimentali;
-- tool `execute_sql` in modalità `readonly = true`;
-- tool `search_objects`.
+### 4.3 `dbhub-crud`
 
-Questa connessione costituisce la baseline read-only del laboratorio.
+Utilizza `mcp_crud_pagila`, abilitato a `SELECT`, `INSERT`, `UPDATE`, `DELETE` sulle tabelle sperimentali; non ha `TRUNCATE`. `execute_sql` ha `readonly = false`; è disponibile anche `search_objects`.
 
-### 4.2 dbhub-writer
+### 4.4 `dbhub-sqli`
 
-Configurazione:
+Utilizza `mcp_readonly_pagila` ed espone i custom tool `search_customer_unsafe` e `search_customer_safe`. Non espone un tool `execute_sql` generico. I custom tool richiamano due funzioni PostgreSQL che utilizzano, rispettivamente, SQL dinamico vulnerabile e una query statica sicura. La descrizione completa è in [`../database/sql_injection_lab.md`](../database/sql_injection_lab.md).
 
-`02_Laboratorio/dbhub/dbhub-writer.toml`
+### 4.5 `dbhub-readonly-writer`
 
-Ruolo PostgreSQL:
+La connessione aggiunta per approfondire i controlli MCP utilizza:
 
-`mcp_writer_pagila`
+- File reale: `02_Laboratorio/dbhub/dbhub-readonly-writer.toml`;
+- Template pubblico: `02_Laboratorio/dbhub/dbhub-readonly-writer.toml.example`;
+- Ruolo PostgreSQL: `mcp_writer_pagila`;
+- Schema di lavoro: `security_lab`;
+- Tool: `execute_sql` con `readonly = true`, `max_rows = 1000`, e `search_objects`.
 
-Caratteristiche:
-
-- accesso allo schema `security_lab`;
-- SELECT;
-- INSERT;
-- UPDATE;
-- nessun privilegio DELETE;
-- tool `execute_sql` configurato con `readonly = false`;
-- tool `search_objects`.
-
-DBHub permette l'esecuzione delle operazioni di scrittura, mentre PostgreSQL applica le autorizzazioni del ruolo.
-
-### 4.3 dbhub-crud
-
-Configurazione:
-
-`02_Laboratorio/dbhub/dbhub-crud.toml`
-
-Ruolo PostgreSQL:
-
-`mcp_crud_pagila`
-
-Caratteristiche:
-
-- accesso allo schema `security_lab`;
-- SELECT;
-- INSERT;
-- UPDATE;
-- DELETE;
-- nessun privilegio TRUNCATE;
-- tool `execute_sql` configurato con `readonly = false`;
-- tool `search_objects`.
-
-Questa connessione viene utilizzata per verificare le operazioni CRUD complete.
-
-### 4.4 dbhub-sqli
-
-Configurazione:
-
-`02_Laboratorio/dbhub/dbhub-sqli.toml`
-
-Ruolo PostgreSQL:
-
-`mcp_readonly_pagila`
-
-Caratteristiche:
-
-- accesso in sola lettura;
-- schema di lavoro `security_lab`;
-- nessun tool SQL generico `execute_sql`;
-- esposizione di due custom tool:
-  - `search_customer_unsafe`;
-  - `search_customer_safe`.
-
-La connessione è dedicata all'esperimento SQL Injection.
-
-Le due funzioni PostgreSQL sottostanti utilizzano rispettivamente SQL dinamico vulnerabile e SQL statico parametrizzato.
+Non viene creato un quarto utente PostgreSQL: lo stesso account writer è usato da due server MCP configurati in maniera diversa.
 
 ## 5. Configurazione di Claude Desktop
 
-Il file di configurazione viene aperto direttamente da Claude Desktop attraverso:
-
-`Settings → Developer → Edit Config`
-
-La sezione `mcpServers` contiene le connessioni MCP.
-
-Esempio:
+Il file JSON di Claude Desktop contiene un oggetto `mcpServers`. Il seguente è un **esempio completo** con percorsi segnaposto: sostituire `C:/PERCORSO/PROGETTO` con il percorso locale reale prima dell'uso. I separatori `/` nei percorsi Windows sono accettati qui e rendono l'esempio JSON più leggibile.
 
 ```json
 {
@@ -194,92 +124,75 @@ Esempio:
     "dbhub-thesis": {
       "command": "npx",
       "args": [
-        "-y",
-        "@bytebase/dbhub@latest",
-        "--transport",
-        "stdio",
-        "--config",
-        "C:\\PERCORSO\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-pagila.toml"
+        "-y", "@bytebase/dbhub@latest", "--transport", "stdio", "--config",
+        "C:/PERCORSO/PROGETTO/02_Laboratorio/dbhub/dbhub-pagila.toml"
       ]
     },
     "dbhub-writer": {
       "command": "npx",
       "args": [
-        "-y",
-        "@bytebase/dbhub@latest",
-        "--transport",
-        "stdio",
-        "--config",
-        "C:\\PERCORSO\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-writer.toml"
+        "-y", "@bytebase/dbhub@latest", "--transport", "stdio", "--config",
+        "C:/PERCORSO/PROGETTO/02_Laboratorio/dbhub/dbhub-writer.toml"
       ]
     },
     "dbhub-crud": {
       "command": "npx",
       "args": [
-        "-y",
-        "@bytebase/dbhub@latest",
-        "--transport",
-        "stdio",
-        "--config",
-        "C:\\PERCORSO\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-crud.toml"
+        "-y", "@bytebase/dbhub@latest", "--transport", "stdio", "--config",
+        "C:/PERCORSO/PROGETTO/02_Laboratorio/dbhub/dbhub-crud.toml"
       ]
     },
     "dbhub-sqli": {
       "command": "npx",
       "args": [
-        "-y",
-        "@bytebase/dbhub@latest",
-        "--transport",
-        "stdio",
-        "--config",
-        "C:\\PERCORSO\\PROGETTO\\02_Laboratorio\\dbhub\\dbhub-sqli.toml"
+        "-y", "@bytebase/dbhub@latest", "--transport", "stdio", "--config",
+        "C:/PERCORSO/PROGETTO/02_Laboratorio/dbhub/dbhub-sqli.toml"
+      ]
+    },
+    "dbhub-readonly-writer": {
+      "command": "npx",
+      "args": [
+        "-y", "@bytebase/dbhub@1.7.1", "--transport", "stdio", "--config",
+        "C:/PERCORSO/PROGETTO/02_Laboratorio/dbhub/dbhub-readonly-writer.toml"
       ]
     }
   }
 }
 ```
 
-Il percorso deve essere sostituito con quello effettivo del progetto sul computer utilizzato.
+**Nota di riproducibilità:** l'esempio conserva `@latest` per le quattro configurazioni preesistenti, come nel documento originario, e registra la versione fissata per la quinta. Se si vuole confrontare le stesse implementazioni del software, occorre fissare e verificare la versione effettiva di tutti i server. Non sostituire il JSON reale di Claude Desktop indiscriminatamente: preservare eventuali altre connessioni e preferenze.
 
-Se il file contiene altre preferenze o server MCP, queste devono essere mantenute.
-
-Dopo ogni modifica alla configurazione è necessario salvare il file e riavviare completamente Claude Desktop.
+Dopo una modifica al JSON o ai TOML, salvare e riavviare completamente Claude Desktop.
 
 ## 6. Verifica dell'identità delle connessioni
 
-Per verificare che ogni server utilizzi il corretto account PostgreSQL è stata eseguita la seguente query:
+La query impiegata, dove il tool generico è disponibile, è:
 
 ```sql
 SELECT current_database(), current_user;
 ```
 
-Risultati ottenuti:
+| Server MCP | Database | Utente PostgreSQL | Verifica |
+|---|---|---|---|
+| `dbhub-thesis` | `pagila` | `mcp_readonly_pagila` | Confermata |
+| `dbhub-writer` | `pagila` | `mcp_writer_pagila` | Confermata |
+| `dbhub-crud` | `pagila` | `mcp_crud_pagila` | Confermata |
+| `dbhub-sqli` | `pagila` | `mcp_readonly_pagila` | Confermata mediante custom tool |
+| `dbhub-readonly-writer` | `pagila` | `mcp_writer_pagila` | Confermata tramite `execute_sql` |
 
-| Server MCP | Database | Utente PostgreSQL |
-|---|---|---|
-| `dbhub-thesis` | `pagila` | `mcp_readonly_pagila` |
-| `dbhub-writer` | `pagila` | `mcp_writer_pagila` |
-| `dbhub-crud` | `pagila` | `mcp_crud_pagila` |
-| `dbhub-sqli` | `pagila` | `mcp_readonly_pagila` |
+La condivisione dello stesso ruolo da parte di `dbhub-writer` e `dbhub-readonly-writer` è intenzionale e costituisce la base del confronto sperimentale.
 
-La verifica dimostra che le connessioni utilizzano effettivamente identità PostgreSQL differenti.
+## 7. Test tramite `dbhub-thesis`
 
-## 7. Test tramite dbhub-thesis
-
-È stata verificata la lettura dei dati originali di Pagila.
-
-La query:
+È stata verificata la lettura dei dati originali di Pagila:
 
 ```sql
-SELECT COUNT(*) AS customers
-FROM public.customer;
+SELECT COUNT(*) AS customers FROM public.customer;
 ```
 
-ha restituito:
+Risultato: **999** clienti.
 
-`999`
-
-È stato successivamente tentato un UPDATE:
+Un tentativo di aggiornamento è stato rifiutato da DBHub:
 
 ```sql
 UPDATE public.customer
@@ -287,150 +200,82 @@ SET first_name = first_name
 WHERE false;
 ```
 
-DBHub ha respinto la query con:
+Risposta: `READONLY_VIOLATION`. Il conteggio successivo è rimasto invariato. Un test indipendente direttamente su PostgreSQL, con il ruolo read-only, ha restituito `permission denied for table customer`. Questi due test mostrano l'esistenza di controlli su livelli distinti, ma questa configurazione da sola non consente di isolare il controllo MCP.
 
-```text
-code: READONLY_VIOLATION
+## 8. Test tramite `dbhub-writer`
 
-Read-only mode is enabled.
-Only the following SQL operations are allowed:
-select, with, explain, show
-```
+Sulla tabella `security_lab.test_customers` sono state ottenute le seguenti evidenze:
 
-Una nuova SELECT ha confermato che i clienti erano ancora 999.
+| Operazione | Record | Esito |
+|---|---|---|
+| `INSERT` | `customer_id = 9010` | Consentita |
+| `UPDATE` | `customer_id = 9010` | Consentita |
+| `DELETE` | `customer_id = 9010` | Negata da PostgreSQL (`permission denied`) |
 
-## 8. Test tramite dbhub-writer
+La prova conferma che DBHub non concede privilegi superiori a quelli assegnati al ruolo di connessione.
 
-Il profilo writer è stato utilizzato sulla tabella:
+## 9. Test tramite `dbhub-crud`
 
-`security_lab.test_customers`
+Il server `dbhub-crud` ha eliminato il record temporaneo `9010`, inserito e aggiornato il record `9020`, quindi eliminato anche `9020`. La verifica finale ha restituito zero righe per l'identificativo `9020`.
 
-### 8.1 INSERT
+## 10. Esperimento SQL injection tramite `dbhub-sqli`
 
-È stato inserito un record temporaneo:
+Il tool `search_customer_unsafe` ha restituito un record con la ricerca legittima `Lovelace`, mentre con il payload `x' OR '1'='1` ha restituito **tutti e quattro** i clienti sintetici. Il tool `search_customer_safe`, con lo stesso payload, ha restituito **zero record**.
 
-| Campo | Valore |
-|---|---|
-| customer_id | 9010 |
-| first_name | Claude |
-| last_name | Writer |
-| email | claude.writer@example.test |
-| notes | MCP writer test |
+È stato inoltre effettuato un test UNION che ha restituito informazioni su `pagila`, sull'utente `mcp_readonly_pagila` e sulla versione PostgreSQL `18.6`; il payload esatto non è stato conservato nella documentazione originale.
 
-L'inserimento è riuscito ed è stato verificato con una SELECT.
+Il difetto risiede nella costruzione di una query SQL dinamica nella funzione PostgreSQL vulnerabile, non nella parametrizzazione esterna del custom tool DBHub. Non è stata dimostrata alcuna modifica dei dati o escalation di privilegi. Dettagli: [`../database/sql_injection_lab.md`](../database/sql_injection_lab.md).
 
-### 8.2 UPDATE
+## 11. Esperimenti sul controllo read-only di DBHub
 
-Il campo `notes` è stato aggiornato al valore:
+Per isolare la protezione MCP è stato utilizzato lo stesso ruolo `mcp_writer_pagila` tramite due server:
 
-`Updated through DBHub Writer`
+| Configurazione | `execute_sql.readonly` | `transaction_read_only` osservato |
+|---|---|---|
+| `dbhub-writer` | `false` | `off` |
+| `dbhub-readonly-writer` | `true` | `on` |
 
-L'aggiornamento è riuscito.
+### 11.1 UPDATE diretto
 
-### 8.3 DELETE
+Sul server `dbhub-readonly-writer` la query `UPDATE security_lab.test_customers SET notes = notes WHERE customer_id = -1` è stata respinta con `READONLY_VIOLATION`. Un controllo precedente aveva confermato che l'identificativo `-1` non era presente.
 
-È stato tentato un DELETE sul record 9010.
+### 11.2 UPDATE annidato in una `WITH`
 
-PostgreSQL ha restituito:
+Anche un CTE con un'istruzione `UPDATE` al suo interno è stato rifiutato con `READONLY_VIOLATION`, benché la query iniziasse con `WITH`.
 
-```text
-error: permission denied for table test_customers
-code: EXECUTION_ERROR
-```
+### 11.3 Funzione con effetti collaterali
 
-Una SELECT successiva ha confermato che il record era ancora presente.
+Nello schema `security_lab` è stata creata la funzione `readonly_write_probe()` (`SECURITY INVOKER`) che incrementa il valore di `security_lab.mcp_readonly_probe.counter` tramite un `UPDATE`.
 
-Il test dimostra che il ruolo writer può inserire e modificare record, ma non eliminarli.
+- Tramite `dbhub-writer`, `SELECT security_lab.readonly_write_probe()` è riuscita e il contatore è passato da **0** a **1**.
+- Tramite `dbhub-readonly-writer`, la stessa invocazione ha restituito l'errore `cannot execute UPDATE in a read-only transaction` (`EXECUTION_ERROR`). Il contatore è rimasto a **1**.
 
-## 9. Test tramite dbhub-crud
+Questo test distingue il controllo del testo SQL dal vincolo della transazione read-only applicato durante l'esecuzione. Non dimostra l'assenza di ogni possibile aggiramento.
 
-Il profilo CRUD è stato utilizzato per verificare tutte le operazioni.
+La preparazione della tabella e della funzione è stata integrata in [`../database/security_lab.sql`](../database/security_lab.sql); il resoconto completo è in [`../database/dbhub_security_tests.md`](../database/dbhub_security_tests.md).
 
-Le operazioni eseguite sono state:
+## 12. Test SQL injection sul tool predefinito `search_objects`
 
-1. eliminazione del record temporaneo 9010;
-2. inserimento di un nuovo record con ID 9020;
-3. aggiornamento del campo `notes`;
-4. verifica del record aggiornato;
-5. eliminazione del record 9020;
-6. verifica dell'assenza del record.
+Sul server `dbhub-readonly-writer`, usando **esclusivamente** `search_objects`, sono state confrontate ricerche legittime con input contenenti la stringa SQL `' OR '1'='1`.
 
-L'inserimento e l'aggiornamento sono riusciti.
+| Parametro in esame | Ricerca legittima | Input manipolato | Risultato osservato |
+|---|---|---|---|
+| `pattern` | 1 tabella | `mcp_readonly_probe' OR '1'='1` | 0 risultati |
+| `schema` | `security_lab` | `security_lab' OR '1'='1` | `SCHEMA_NOT_FOUND` |
+| `table` | 2 colonne (`id`, `counter`) | `mcp_readonly_probe' OR '1'='1` | 0 risultati |
 
-Entrambi i DELETE sono stati eseguiti correttamente.
+Non è stata osservata alcuna SQL injection nei casi testati. Il risultato non prova l'immunità generale di `search_objects`. La risposta `SCHEMA_NOT_FOUND` espone anche l'elenco degli schemi disponibili (`public`, `security_lab`), un comportamento da valutare separatamente come divulgazione di metadati.
 
-La verifica finale ha restituito zero righe per il record 9020.
+## 13. Considerazioni finali
 
-Il test conferma il funzionamento del profilo CRUD.
+Il laboratorio dimostra, negli scenari provati, che:
 
-## 10. Esperimento SQL Injection tramite dbhub-sqli
+1. PostgreSQL applica i privilegi dei ruoli anche quando le operazioni sono inviate da un MCP Server.
+2. DBHub, con `execute_sql.readonly = true`, rifiuta le scritture dirette e quelle annidate nella `WITH`.
+3. La transazione read-only impedisce anche l'`UPDATE` interno a una funzione invocata con `SELECT`, nella configurazione verificata.
+4. Un custom tool parametrizzato può comunque richiamare una funzione PostgreSQL vulnerabile se questa costruisce SQL dinamico in modo insicuro.
+5. I payload impiegati nei test di `search_objects` non hanno modificato la logica delle ricerche.
 
-Il server `dbhub-sqli` è dedicato alla verifica di due implementazioni della ricerca di clienti.
+Il tool `execute_sql` accetta SQL esplicito per progettazione: questa capacità non equivale da sola a una vulnerabilità SQL injection. Le verifiche read-only e l'analisi dei tool devono quindi essere valutate come aspetti distinti.
 
-I custom tool disponibili sono:
-
-- `search_customer_unsafe`;
-- `search_customer_safe`.
-
-Entrambi ricevono un parametro stringa denominato `last_name`.
-
-### 10.1 Ricerca normale
-
-Utilizzando `search_customer_unsafe` con:
-
-`Lovelace`
-
-è stato restituito un singolo record:
-
-Ada Lovelace.
-
-### 10.2 SQL Injection sulla funzione vulnerabile
-
-È stato passato il seguente valore:
-
-```text
-x' OR '1'='1
-```
-
-Il custom tool `search_customer_unsafe` ha restituito tutti e quattro i clienti presenti nella tabella sperimentale.
-
-Il test conferma che la concatenazione dell'input nella query dinamica permette di alterare la condizione WHERE.
-
-### 10.3 Verifica della funzione sicura
-
-È stato utilizzato lo stesso valore con `search_customer_safe`.
-
-Risultato:
-
-`0 record`
-
-La funzione ha trattato l'intero input come valore letterale del parametro e non come codice SQL.
-
-### 10.4 UNION-based SQL Injection
-
-È stato inoltre eseguito un test di tipo UNION sul custom tool vulnerabile.
-
-Durante il test è stato individuato il numero di colonne atteso dalla funzione, pari a quattro.
-
-La verifica ha permesso di ottenere:
-
-| Informazione | Risultato |
-|---|---|
-| Database corrente | `pagila` |
-| Utente corrente | `mcp_readonly_pagila` |
-| Versione PostgreSQL | 18.6 |
-
-Il payload UNION esatto non è stato conservato nel resoconto dell'esperimento e non viene ricostruito in questo documento.
-
-## 11. Considerazioni finali
-
-L'integrazione ha permesso di verificare quattro server MCP distinti, collegati allo stesso database ma autenticati con differenti identità PostgreSQL.
-
-I test CRUD hanno confermato che i privilegi del DBMS vengono applicati anche quando le query vengono eseguite tramite DBHub.
-
-L'esperimento SQL Injection ha inoltre dimostrato che una connessione read-only può comunque essere vulnerabile a problemi di integrità della costruzione delle query e di esposizione dei dati.
-
-La parametrizzazione del tool MCP non protegge automaticamente una funzione PostgreSQL che utilizza SQL dinamico concatenando input non affidabili.
-
-La configurazione costituisce una baseline sperimentale per i successivi confronti tra differenti MCP Server.
-
+I risultati dettagliati sono documentati in [`../database/setup.md`](../database/setup.md), [`../database/sql_injection_lab.md`](../database/sql_injection_lab.md) e [`../database/dbhub_security_tests.md`](../database/dbhub_security_tests.md).

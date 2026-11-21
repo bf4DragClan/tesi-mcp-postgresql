@@ -156,6 +156,9 @@ Contiene le seguenti tabelle:
 
 - `security_lab.test_customers`
 - `security_lab.test_accounts`
+- `security_lab.mcp_readonly_probe`
+
+La tabella `mcp_readonly_probe` contiene un contatore sintetico utilizzato nei test di scrittura indiretta attraverso il tool MCP. La funzione `security_lab.readonly_write_probe()` incrementa il contatore mediante un `UPDATE` interno, se la transazione lo permette. Nei test documentati, il valore iniziale era `0` e, dopo il controllo positivo sul profilo writer, è arrivato a `1`.
 
 La tabella `test_customers` contiene quattro clienti sintetici:
 
@@ -243,13 +246,14 @@ Lo script:
 
 `02_Laboratorio/database/security_lab.sql`
 
-contiene la definizione dello schema sperimentale, delle tabelle, dei dati sintetici e dei privilegi dei tre ruoli.
+contiene la definizione dello schema sperimentale, delle tabelle, dei dati sintetici e dei privilegi dei tre ruoli. Comprende anche la tabella `mcp_readonly_probe`, la funzione `readonly_write_probe()` (`VOLATILE`, `SECURITY INVOKER`) e il privilegio `EXECUTE` concesso a `mcp_writer_pagila`.
+
+**Prerequisito:** il ruolo `mcp_readonly_pagila` deve essere già presente nel database prima dell'esecuzione dello script. Lo script utilizza `IF NOT EXISTS` e `ON CONFLICT DO NOTHING` per gli oggetti e i dati di prova: rieseguirlo non azzera il contatore esistente.
 
 Lo script deve essere eseguito con l'utente amministrativo PostgreSQL:
 
 ```powershell
 docker cp ".\database\security_lab.sql" tesi-pagila:/tmp/security_lab.sql
-
 docker exec tesi-pagila psql -U postgres -d pagila -v ON_ERROR_STOP=1 -f /tmp/security_lab.sql
 ```
 
@@ -339,7 +343,8 @@ Sono state realizzate configurazioni separate per i differenti profili.
 | `dbhub-pagila.toml` | `mcp_readonly_pagila` | `public` | Read-only |
 | `dbhub-writer.toml` | `mcp_writer_pagila` | `security_lab` | Scrittura |
 | `dbhub-crud.toml` | `mcp_crud_pagila` | `security_lab` | Scrittura |
-| `dbhub-sqli.toml` | `mcp_readonly_pagila` | `security_lab` | Read-only |
+| `dbhub-sqli.toml` | `mcp_readonly_pagila` | `security_lab` | Custom tool di sola lettura |
+| `dbhub-readonly-writer.toml` | `mcp_writer_pagila` | `security_lab` | Read-only sul tool `execute_sql` |
 
 Le configurazioni reali contengono credenziali e sono escluse dal repository.
 
@@ -359,6 +364,8 @@ readonly = true
 max_rows = 1000
 ```
 
+Nel nuovo profilo `dbhub-readonly-writer`, `execute_sql` ha `readonly = true`, pur utilizzando l'utente `mcp_writer_pagila`, che possiede permessi di scrittura sulle tabelle di prova. Questo confronto isola l'efficacia della policy del tool MCP.
+
 Nei profili writer e CRUD, il tool `execute_sql` è configurato con:
 
 ```toml
@@ -375,6 +382,12 @@ Il profilo dedicato all'esperimento SQL Injection espone invece esclusivamente d
 
 Non espone un tool SQL generico `execute_sql`.
 
+### 7.3 Versione DBHub e riproducibilità
+
+Nella cache npm locale è stata rilevata la versione `1.7.1` di `@bytebase/dbhub`. La nuova configurazione `dbhub-readonly-writer` è stata aggiunta a Claude Desktop indicando esplicitamente `@bytebase/dbhub@1.7.1`.
+
+**Limite della verifica:** il controllo della cache e del file di configurazione non costituisce una prova indipendente della versione del processo realmente avviato. Per la riproducibilità, è opportuno conservare anche un'evidenza della versione caricata dal server.
+
 ## 8. Integrazione con Claude Desktop
 
 Claude Desktop viene utilizzato come client MCP per inviare richieste ai server DBHub.
@@ -383,7 +396,7 @@ La configurazione è descritta nel documento:
 
 `02_Laboratorio/client/claude-desktop.md`
 
-Sono state verificate quattro connessioni MCP distinte:
+Sono state verificate cinque connessioni MCP distinte:
 
 | Nome server | Ruolo PostgreSQL |
 |---|---|
@@ -391,6 +404,7 @@ Sono state verificate quattro connessioni MCP distinte:
 | `dbhub-writer` | `mcp_writer_pagila` |
 | `dbhub-crud` | `mcp_crud_pagila` |
 | `dbhub-sqli` | `mcp_readonly_pagila` |
+| `dbhub-readonly-writer` | `mcp_writer_pagila` |
 
 Per ogni connessione è stata verificata l'identità dell'utente PostgreSQL tramite:
 
@@ -424,7 +438,6 @@ Errore restituito:
 
 ```text
 code: READONLY_VIOLATION
-
 Read-only mode is enabled.
 Only the following SQL operations are allowed:
 select, with, explain, show
@@ -475,6 +488,75 @@ La verifica finale ha restituito zero record con ID 9020.
 
 Questo esperimento ha confermato che `mcp_crud_pagila` permette tutte le operazioni CRUD previste.
 
+### 9.5 Confronto read-only e writer a parità di utente PostgreSQL
+
+Le configurazioni `dbhub-writer` e `dbhub-readonly-writer` utilizzano entrambe il ruolo `mcp_writer_pagila`, ma differiscono nell'impostazione `readonly` di `execute_sql`.
+
+Sul profilo `dbhub-readonly-writer`, una `SELECT` preliminare ha confermato l'assenza della riga con `customer_id = -1`. Il seguente tentativo di scrittura è stato quindi effettuato su una riga inesistente:
+
+```sql
+UPDATE security_lab.test_customers
+SET notes = notes
+WHERE customer_id = -1;
+```
+
+**Risultato:** `success = false`, `code = READONLY_VIOLATION`. Il controllo DBHub ha respinto la query.
+
+È stato inoltre eseguito il tentativo di scrittura annidato:
+
+```sql
+WITH attempted_update AS (
+    UPDATE security_lab.test_customers
+    SET notes = notes
+    WHERE customer_id = -1
+    RETURNING customer_id
+)
+SELECT COUNT(*) FROM attempted_update;
+```
+
+**Risultato:** `READONLY_VIOLATION`. In questo caso la presenza dell'`UPDATE` nella `WITH` non ha consentito di aggirare la policy.
+
+### 9.6 Transazioni read-only e scritture indirette tramite funzioni
+
+Nella connessione `dbhub-readonly-writer`, l'istruzione:
+
+```sql
+SELECT current_setting('transaction_read_only') AS transaction_read_only;
+```
+
+ha restituito `on`. Per il profilo `dbhub-writer`, usando lo stesso ruolo PostgreSQL, `transaction_read_only` e `default_transaction_read_only` risultavano `off`.
+
+Per studiare una scrittura indiretta è stata creata la funzione `security_lab.readonly_write_probe()`, che prova a incrementare `security_lab.mcp_readonly_probe.counter`. La funzione è `SECURITY INVOKER`, dunque non acquisisce privilegi superiori a quelli dell'utente chiamante.
+
+La chiamata sperimentale è:
+
+```sql
+SELECT security_lab.readonly_write_probe();
+```
+
+| Server MCP | Contatore prima | Esito della chiamata | Contatore dopo |
+|---|---:|---|---:|
+| `dbhub-writer` | 0 | Successo; valore restituito `1` | 1 |
+| `dbhub-readonly-writer` | 1 | `EXECUTION_ERROR`: `cannot execute UPDATE in a read-only transaction` | 1 |
+
+Il primo risultato mostra che la funzione è realmente in grado di scrivere quando la configurazione lo consente. Nel secondo caso la `SELECT` è stata accettata come istruzione iniziale, ma PostgreSQL ha bloccato l'`UPDATE` interno per effetto della transazione read-only impostata nel percorso MCP. Il contatore è rimasto invariato.
+
+### 9.7 SQL injection nei tool predefiniti di DBHub
+
+È stato testato il tool `search_objects` sul profilo `dbhub-readonly-writer`, con richieste limitate ai metadati dello schema `security_lab` e senza modifiche al database.
+
+| Parametro verificato | Ricerca normale | Input con sintassi SQL | Risultato dell'input alterato |
+|---|---|---|---|
+| `pattern` | `mcp_readonly_probe` → 1 tabella | `mcp_readonly_probe' OR '1'='1` | 0 oggetti |
+| `schema` | `security_lab` | `security_lab' OR '1'='1` | `SCHEMA_NOT_FOUND` |
+| `table` | `mcp_readonly_probe` → 2 colonne | `mcp_readonly_probe' OR '1'='1` | 0 colonne |
+
+I test non hanno evidenziato SQL injection con questi specifici payload. Il messaggio `SCHEMA_NOT_FOUND` riportava anche l'elenco degli schemi disponibili (`public`, `security_lab`), una forma di esposizione di metadati da distinguere dalla SQL injection.
+
+L'analisi del codice sorgente taggato `v1.7.1` mostra che, nei percorsi esaminati, `search_objects` filtra `pattern` dopo aver recuperato i nomi degli oggetti e usa verifiche/parametri per `schema` e `table`. I risultati dei test sono coerenti con questi meccanismi. Il tool `execute_sql`, invece, riceve intenzionalmente SQL dal client; ciò non costituisce di per sé una SQL injection. La sua superficie di sicurezza va valutata rispetto alle policy e ai privilegi applicati.
+
+**Limiti:** l'assenza di SQL injection nei tre casi non dimostra che ogni parametro, variante di query o versione del server sia immune. I dettagli dei test, dei messaggi e dei riferimenti al codice sono raccolti in [`dbhub_security_tests.md`](dbhub_security_tests.md).
+
 ## 10. Esperimento SQL Injection
 
 Per analizzare il comportamento delle query costruite con input non affidabili è stato realizzato un esperimento dedicato.
@@ -519,13 +601,21 @@ I risultati dimostrano che la modalità read-only non elimina automaticamente i 
 
 Il laboratorio ha permesso di verificare sperimentalmente:
 
-- tre differenti profili di autorizzazione PostgreSQL;
-- tre server DBHub con ruoli distinti;
-- un ulteriore server dedicato ai test SQL Injection;
-- il funzionamento dei controlli read-only;
-- il blocco delle operazioni non autorizzate da parte di PostgreSQL;
+- tre profili di autorizzazione PostgreSQL, utilizzati attraverso cinque configurazioni MCP distinte;
+- l'efficacia del controllo read-only di DBHub contro un `UPDATE` diretto e contro una scrittura annidata in `WITH`;
+- l'applicazione di transazioni read-only da parte della configurazione MCP, con blocco di una modifica tentata da una funzione richiamata mediante `SELECT`;
+- il blocco delle operazioni non autorizzate da parte dei privilegi PostgreSQL;
 - l'esecuzione delle operazioni CRUD tramite i profili appropriati;
-- la differenza tra SQL dinamico vulnerabile e query parametrizzate.
+- la vulnerabilità SQL injection del custom tool sperimentale basato su una funzione SQL dinamica e la protezione offerta dalla funzione statica;
+- l'assenza di SQL injection osservata nei test mirati sui parametri `pattern`, `schema` e `table` di `search_objects`.
 
 I risultati costituiscono la baseline sperimentale del progetto e saranno utilizzati per il confronto tra le differenti implementazioni MCP Server analizzate nella fase di ricerca.
 
+## 12. Documentazione correlata e prossimi controlli
+
+- [`sql_injection_lab.md`](sql_injection_lab.md): esperimenti sui custom tool sicuro e vulnerabile.
+- [`dbhub_security_tests.md`](dbhub_security_tests.md): resoconto dettagliato delle verifiche read-only e dei tool predefiniti DBHub, incluso l'approfondimento sulla vulnerabilità storica CVE-2026-61788.
+- [`security_lab.sql`](security_lab.sql): schema sperimentale, privilegi e funzione di prova riproducibili.
+- `02_Laboratorio/client/claude-desktop.md`: documentazione del client e delle configurazioni MCP.
+
+Per consolidare la riproducibilità, restano utili una verifica indipendente della versione DBHub effettivamente avviata da Claude Desktop e la conservazione delle risposte JSON integrali dei tool, senza credenziali. Le conclusioni sono circoscritte agli esperimenti realmente eseguiti nel laboratorio locale.
